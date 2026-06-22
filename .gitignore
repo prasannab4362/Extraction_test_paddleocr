@@ -1,0 +1,8 @@
+.venv/
+ollama_bin/
+ollama_data/
+*.zip
+*.exe
+*.tmp
+*_extracted.json
+__pycache__/
