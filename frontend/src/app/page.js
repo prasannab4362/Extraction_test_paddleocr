@@ -1,47 +1,15 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 
 export default function Home() {
-  const [activePanel, setActivePanel] = useState("extractor");
+  const [activeTile, setActiveTile] = useState(null); // null means show grid, otherwise show specific upload
   const [activeTab, setActiveTab] = useState("structured");
-  const [groqKey, setGroqKey] = useState("");
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [currentMode, setCurrentMode] = useState("merge");
   const [loading, setLoading] = useState(false);
   const [loadingStatus, setLoadingStatus] = useState("Queued");
   const [results, setResults] = useState([]);
-  const [documentsDatabase, setDocumentsDatabase] = useState([]);
-  const [invoiceSearch, setInvoiceSearch] = useState("");
-  const [warrantySearch, setWarrantySearch] = useState("");
-  const [selectedDoc, setSelectedDoc] = useState(null);
-
-  // Initialize and load saved state from localStorage
-  useEffect(() => {
-    const savedKey = localStorage.getItem("groq_api_key");
-    if (savedKey) {
-      setGroqKey(savedKey);
-    }
-    loadDocumentsFromDb();
-  }, []);
-
-  const handleApiKeyChange = (e) => {
-    const key = e.target.value.trim();
-    setGroqKey(key);
-    localStorage.setItem("groq_api_key", key);
-  };
-
-  const loadDocumentsFromDb = async () => {
-    try {
-      const response = await fetch("http://127.0.0.1:8000/api/documents");
-      if (response.ok) {
-        const data = await response.json();
-        setDocumentsDatabase(data);
-      }
-    } catch (err) {
-      console.error("Failed to load documents from database:", err);
-    }
-  };
 
   const handleFileChange = (e) => {
     if (e.target.files) {
@@ -71,11 +39,6 @@ export default function Home() {
   };
 
   const runExtraction = async () => {
-    if (!groqKey) {
-      alert("Please enter your Groq API Key in the sidebar first!");
-      return;
-    }
-
     setLoading(true);
     setLoadingStatus("Running PaddleOCR on pages...");
 
@@ -84,13 +47,11 @@ export default function Home() {
       formData.append("files", file);
     });
     formData.append("mode", currentMode);
+    formData.append("doc_type", activeTile);
 
     try {
       const response = await fetch("http://127.0.0.1:8000/api/extract", {
         method: "POST",
-        headers: {
-          "X-Groq-API-Key": groqKey,
-        },
         body: formData,
       });
 
@@ -102,36 +63,10 @@ export default function Home() {
       setLoadingStatus("Formatting results...");
       const data = await response.json();
       setResults(data);
-      loadDocumentsFromDb(); // Refresh the databases
     } catch (err) {
       alert("Error during extraction: " + err.message);
     } finally {
       setLoading(false);
-    }
-  };
-
-  const deleteDoc = async (docId) => {
-    if (!confirm("Are you sure you want to delete this document?")) return;
-    try {
-      const response = await fetch(`http://127.0.0.1:8000/api/documents/${docId}`, {
-        method: "DELETE",
-      });
-      if (response.ok) {
-        loadDocumentsFromDb();
-      }
-    } catch (err) {
-      alert("Failed to delete document: " + err.message);
-    }
-  };
-
-  const checkExpiry = (expiryDateStr) => {
-    if (!expiryDateStr || expiryDateStr === "N/A" || expiryDateStr.toLowerCase() === "lifetime") return false;
-    try {
-      const expiryDate = new Date(expiryDateStr);
-      if (isNaN(expiryDate.getTime())) return false;
-      return expiryDate < new Date();
-    } catch {
-      return false;
     }
   };
 
@@ -141,97 +76,114 @@ export default function Home() {
     });
   };
 
-  // Filtered lists for trackers
-  const filteredInvoices = documentsDatabase
-    .filter((d) => d.document_type.toLowerCase() === "invoice" || d.document_type.toLowerCase() === "bill")
-    .filter((d) => {
-      const s = invoiceSearch.toLowerCase();
-      const struct = d.structured_data;
-      return (
-        (struct.vendor_name || "").toLowerCase().includes(s) ||
-        (struct.invoice_or_bill_number || "").toLowerCase().includes(s) ||
-        (struct.date || "").toLowerCase().includes(s)
-      );
-    });
+  const resetWorkspace = () => {
+    setActiveTile(null);
+    setSelectedFiles([]);
+    setResults([]);
+    setActiveTab("structured");
+  };
 
-  const filteredWarranties = documentsDatabase
-    .filter((d) => d.document_type.toLowerCase() === "warranty")
-    .filter((d) => {
-      const s = warrantySearch.toLowerCase();
-      const struct = d.structured_data;
-      return (
-        (struct.product_name || "").toLowerCase().includes(s) ||
-        (struct.provider_name || "").toLowerCase().includes(s) ||
-        (struct.serial_number || "").toLowerCase().includes(s)
-      );
-    });
+  // Extraction Cards metadata
+  const tiles = [
+    { id: "invoice", name: "Invoice Extractor", icon: "🧾", desc: "Extract totals, vendor details, tax, and line items." },
+    { id: "business_card", name: "Business Card Reader", icon: "📇", desc: "Extract contact info, email, company, and address." },
+    { id: "table", name: "Table Structure Extractor", icon: "📊", desc: "Extract grids and tabular structure documents." },
+    { id: "aadhaar", name: "Aadhaar Card Extractor", icon: "🆔", desc: "Extract Aadhaar number, name, DOB, and gender." },
+    { id: "pan", name: "PAN Card Extractor", icon: "💳", desc: "Extract PAN number, full name, and father's name." },
+    { id: "general", name: "General Document Extractor", icon: "📄", desc: "Extract unstructured articles, text sheets, and summaries." }
+  ];
 
   return (
     <>
       {/* Sidebar Navigation */}
       <div className="sidebar">
-        <div className="brand">
+        <div className="brand" onClick={resetWorkspace} style={{ cursor: "pointer" }}>
           <div className="brand-logo">O</div>
           <div className="brand-name">OCR extraction</div>
         </div>
         <ul className="nav-list">
-          <li
-            className={`nav-item ${activePanel === "extractor" ? "active" : ""}`}
-            onClick={() => setActivePanel("extractor")}
-          >
+          <li className="nav-item active" onClick={resetWorkspace}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+              <rect x="3" y="3" width="7" height="7" />
+              <rect x="14" y="3" width="7" height="7" />
+              <rect x="14" y="14" width="7" height="7" />
+              <rect x="3" y="14" width="7" height="7" />
             </svg>
-            Document Extractor
-          </li>
-          <li
-            className={`nav-item ${activePanel === "invoice-tracker" ? "active" : ""}`}
-            onClick={() => setActivePanel("invoice-tracker")}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="4" width="20" height="16" rx="2" ry="2" />
-              <line x1="12" y1="4" x2="12" y2="20" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-            </svg>
-            Invoice Tracker
-          </li>
-          <li
-            className={`nav-item ${activePanel === "warranty-tracker" ? "active" : ""}`}
-            onClick={() => setActivePanel("warranty-tracker")}
-          >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-            </svg>
-            Warranty Tracker
+            Dashboard
           </li>
         </ul>
-        <div className="settings-section">
-          <div className="settings-label">Groq API Key</div>
-          <input
-            type="password"
-            className="api-input"
-            placeholder="gsk_..."
-            value={groqKey}
-            onChange={handleApiKeyChange}
-          />
-        </div>
       </div>
 
       {/* Main Workspace Content */}
       <div className="workspace">
         <div className="header">
           <div className="header-title">
-            {activePanel === "extractor"
-              ? "Document Extractor"
-              : activePanel === "invoice-tracker"
-              ? "Invoice & Bill Tracker"
-              : "Warranty Tracker"}
+            {activeTile 
+              ? `${tiles.find(t => t.id === activeTile)?.name}` 
+              : "Dashboard"}
           </div>
+          {activeTile && (
+            <button 
+              onClick={resetWorkspace}
+              style={{
+                background: "transparent",
+                border: "1px solid var(--primary)",
+                color: "var(--primary)",
+                padding: "8px 16px",
+                borderRadius: "var(--radius-md)",
+                cursor: "pointer",
+                fontWeight: 600,
+                fontSize: "14px"
+              }}
+            >
+              ← Back to Options
+            </button>
+          )}
         </div>
 
         <div className="main-content">
-          {/* PANEL: Extractor */}
-          {activePanel === "extractor" && (
+          
+          {/* Main Grid View */}
+          {!activeTile && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "24px" }}>
+              {tiles.map((tile) => (
+                <div 
+                  key={tile.id} 
+                  className="card" 
+                  onClick={() => setActiveTile(tile.id)}
+                  style={{
+                    cursor: "pointer",
+                    transition: "transform 0.2s, box-shadow 0.2s",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "12px",
+                    height: "100%"
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.transform = "translateY(-4px)";
+                    e.currentTarget.style.boxShadow = "0 8px 30px rgba(16, 185, 129, 0.1)";
+                    e.currentTarget.style.borderColor = "var(--primary)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.transform = "none";
+                    e.currentTarget.style.boxShadow = "0 4px 20px rgba(0, 0, 0, 0.03)";
+                    e.currentTarget.style.borderColor = "#e5e7eb";
+                  }}
+                >
+                  <div style={{ fontSize: "36px" }}>{tile.icon}</div>
+                  <div style={{ fontWeight: 700, fontSize: "18px", color: "var(--text-main)", fontFamily: "var(--font-display)" }}>
+                    {tile.name}
+                  </div>
+                  <div style={{ fontSize: "14px", color: "var(--text-muted)", lineHeight: "1.5" }}>
+                    {tile.desc}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Upload & Result Panel */}
+          {activeTile && (
             <div className="panel active">
               <div className="dashboard-grid">
                 {/* Left column: Upload Card */}
@@ -252,8 +204,8 @@ export default function Home() {
                     onClick={() => document.getElementById("file-input").click()}
                   >
                     <div className="dropzone-icon">📥</div>
-                    <div className="dropzone-title">Drag & drop files here</div>
-                    <div className="dropzone-muted">Supports invoices, bills, and warranties (Images or PDFs)</div>
+                    <div className="dropzone-title">Upload files here</div>
+                    <div className="dropzone-muted">Drag and drop images or PDFs</div>
                     <input
                       type="file"
                       id="file-input"
@@ -275,7 +227,7 @@ export default function Home() {
                     <div>
                       <div className="mode-label">Document Queue Mode</div>
                       <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-                        Merge split pages vs separate documents
+                        Merge pages vs separate documents
                       </div>
                     </div>
                     <div
@@ -332,7 +284,7 @@ export default function Home() {
                       <div>
                         {results.map((res) => {
                           const struct = res.structured_data;
-                          const docType = struct.document_type || "Unknown";
+                          const docType = res.document_type || activeTile;
 
                           return (
                             <div key={res.id} style={{ marginBottom: "24px" }}>
@@ -350,94 +302,132 @@ export default function Home() {
                                 <span>File: {res.filename}</span>
                                 <span className="badge badge-type">{docType}</span>
                               </div>
+                              
                               <div className="structured-grid">
-                                {(docType.toLowerCase() === "invoice" || docType.toLowerCase() === "bill") && (
+                                
+                                {/* Invoice / Bill Schema View */}
+                                {activeTile === "invoice" && (
                                   <>
                                     <div className="meta-card">
-                                      <div className="meta-title">Invoice / Billing Info</div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Vendor:</span>
-                                        <span className="meta-val">{struct.vendor_name || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Number:</span>
-                                        <span className="meta-val">{struct.invoice_or_bill_number || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Date:</span>
-                                        <span className="meta-val">{struct.date || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Due Date:</span>
-                                        <span className="meta-val">{struct.due_date || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Currency:</span>
-                                        <span className="meta-val">{struct.currency || "N/A"}</span>
-                                      </div>
+                                      <div className="meta-title">Invoice Details</div>
+                                      <div className="meta-row"><span class="meta-label">Vendor:</span><span class="meta-val">{struct.vendor_name || "N/A"}</span></div>
+                                      <div className="meta-row"><span class="meta-label">Number:</span><span class="meta-val">{struct.invoice_or_bill_number || "N/A"}</span></div>
+                                      <div className="meta-row"><span class="meta-label">Date:</span><span class="meta-val">{struct.date || "N/A"}</span></div>
+                                      <div className="meta-row"><span class="meta-label">Due Date:</span><span class="meta-val">{struct.due_date || "N/A"}</span></div>
                                       <div className="meta-row" style={{ fontWeight: 700, color: "var(--secondary)" }}>
-                                        <span className="meta-label" style={{ color: "var(--secondary)" }}>
-                                          Total Amount:
-                                        </span>
-                                        <span className="meta-val">{struct.total_amount || "N/A"}</span>
+                                        <span class="meta-label" style={{ color: "var(--secondary)" }}>Total Amount:</span>
+                                        <span class="meta-val">{struct.total_amount || "N/A"}</span>
                                       </div>
                                     </div>
                                     <div className="meta-card">
                                       <div className="meta-title">Customer Info</div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Client Name:</span>
-                                        <span className="meta-val">{struct.customer_name || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Address:</span>
-                                        <span
-                                          className="meta-val"
-                                          style={{ textAlign: "right", maxWidth: "150px", overflowWrap: "break-word" }}
-                                        >
-                                          {struct.customer_address || "N/A"}
-                                        </span>
-                                      </div>
+                                      <div className="meta-row"><span class="meta-label">Name:</span><span class="meta-val">{struct.customer_name || "N/A"}</span></div>
+                                      <div className="meta-row"><span class="meta-label">Address:</span><span class="meta-val" style={{ textAlign: "right", maxWidth: "150px" }}>{struct.customer_address || "N/A"}</span></div>
                                     </div>
                                   </>
                                 )}
-                                {docType.toLowerCase() === "warranty" && (
+
+                                {/* Business Card Schema View */}
+                                {activeTile === "business_card" && (
+                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
+                                    <div className="meta-title">Contact Card</div>
+                                    <div className="meta-row"><span class="meta-label">Name:</span><span class="meta-val">{struct.name || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Job Title:</span><span class="meta-val">{struct.job_title || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Company:</span><span class="meta-val">{struct.company_name || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Email:</span><span class="meta-val">{struct.email || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Phone:</span><span class="meta-val">{struct.phone_number || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Website:</span><span class="meta-val">{struct.website || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Address:</span><span class="meta-val">{struct.address || "N/A"}</span></div>
+                                  </div>
+                                )}
+
+                                {/* Aadhaar Card Schema View */}
+                                {activeTile === "aadhaar" && (
+                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
+                                    <div className="meta-title">Aadhaar Card details</div>
+                                    <div className="meta-row" style={{ fontSize: "16px", fontWeight: "700" }}>
+                                      <span class="meta-label">Aadhaar Number:</span>
+                                      <span class="meta-val" style={{ color: "var(--secondary)" }}>{struct.aadhaar_number || "N/A"}</span>
+                                    </div>
+                                    <div className="meta-row"><span class="meta-label">Full Name:</span><span class="meta-val">{struct.full_name || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Date of Birth:</span><span class="meta-val">{struct.date_of_birth || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Gender:</span><span class="meta-val">{struct.gender || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Address:</span><span class="meta-val">{struct.address || "N/A"}</span></div>
+                                  </div>
+                                )}
+
+                                {/* PAN Card Schema View */}
+                                {activeTile === "pan" && (
+                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
+                                    <div className="meta-title">PAN Card details</div>
+                                    <div className="meta-row" style={{ fontSize: "16px", fontWeight: "700" }}>
+                                      <span class="meta-label">PAN Number:</span>
+                                      <span class="meta-val" style={{ color: "var(--secondary)" }}>{struct.pan_number || "N/A"}</span>
+                                    </div>
+                                    <div className="meta-row"><span class="meta-label">Full Name:</span><span class="meta-val">{struct.full_name || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Father's Name:</span><span class="meta-val">{struct.fathers_name || "N/A"}</span></div>
+                                    <div className="meta-row"><span class="meta-label">Date of Birth:</span><span class="meta-val">{struct.date_of_birth || "N/A"}</span></div>
+                                  </div>
+                                )}
+
+                                {/* Tables Schema View */}
+                                {activeTile === "table" && (
+                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
+                                    <div className="meta-title">Table Datasets</div>
+                                    {struct.tables && struct.tables.map((table, tIdx) => (
+                                      <div key={tIdx} style={{ marginBottom: "20px" }}>
+                                        {table.table_title && <div style={{ fontWeight: 600, marginBottom: "8px" }}>{table.table_title}</div>}
+                                        <div className="table-container">
+                                          <table className="data-table">
+                                            <thead>
+                                              <tr>
+                                                {table.headers && table.headers.map((h, hIdx) => <th key={hIdx}>{h}</th>)}
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {table.rows && table.rows.map((row, rIdx) => (
+                                                <tr key={rIdx}>
+                                                  {row.map((cell, cIdx) => <td key={cIdx}>{cell}</td>)}
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
+                                {/* General / Unstructured Schema View */}
+                                {activeTile === "general" && (
                                   <>
-                                    <div className="meta-card">
-                                      <div className="meta-title">Warranty Coverage</div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Product Name:</span>
-                                        <span className="meta-val">{struct.product_name || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Brand / Provider:</span>
-                                        <span className="meta-val">{struct.provider_name || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Model No:</span>
-                                        <span className="meta-val">{struct.model_number || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Serial No:</span>
-                                        <span className="meta-val">{struct.serial_number || "N/A"}</span>
+                                    <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
+                                      <div className="meta-title">Document Summary</div>
+                                      <div style={{ lineHeight: "1.6", color: "var(--text-main)" }}>
+                                        {struct.summary || "No summary provided."}
                                       </div>
                                     </div>
                                     <div className="meta-card">
-                                      <div className="meta-title">Timeline</div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Purchase Date:</span>
-                                        <span className="meta-val">{struct.purchase_date || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Duration:</span>
-                                        <span className="meta-val">{struct.warranty_period || "N/A"}</span>
-                                      </div>
-                                      <div className="meta-row">
-                                        <span className="meta-label">Expires On:</span>
-                                        <span className="meta-val">{struct.warranty_expiry_date || "N/A"}</span>
-                                      </div>
+                                      <div className="meta-title">Key Properties</div>
+                                      {struct.key_metadata && struct.key_metadata.map((meta, mIdx) => (
+                                        <div key={mIdx} className="meta-row">
+                                          <span class="meta-label">{meta.key || "Property"}:</span>
+                                          <span class="meta-val">{meta.value || "N/A"}</span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                    <div className="meta-card">
+                                      <div className="meta-title">Document Outline</div>
+                                      {struct.structured_sections && struct.structured_sections.map((sect, sIdx) => (
+                                        <div key={sIdx} style={{ marginBottom: "12px" }}>
+                                          <div style={{ fontWeight: 600, fontSize: "14px", marginBottom: "4px" }}>{sect.heading}</div>
+                                          <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>{sect.text}</div>
+                                        </div>
+                                      ))}
                                     </div>
                                   </>
                                 )}
+
                               </div>
                             </div>
                           );
@@ -479,207 +469,8 @@ export default function Home() {
             </div>
           )}
 
-          {/* PANEL: Invoice Tracker */}
-          {activePanel === "invoice-tracker" && (
-            <div className="panel active">
-              <div className="tracker-controls">
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search by vendor, date, or billing info..."
-                  value={invoiceSearch}
-                  onChange={(e) => setInvoiceSearch(e.target.value)}
-                />
-              </div>
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Invoice #</th>
-                      <th>Vendor</th>
-                      <th>Billing Date</th>
-                      <th>Due Date</th>
-                      <th>Total Amount</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredInvoices.map((doc) => {
-                      const struct = doc.structured_data;
-                      return (
-                        <tr key={doc.id}>
-                          <td style={{ fontWeight: 600, color: "var(--secondary)" }}>
-                            {struct.invoice_or_bill_number || "N/A"}
-                          </td>
-                          <td>{struct.vendor_name || "N/A"}</td>
-                          <td>{struct.date || "N/A"}</td>
-                          <td>{struct.due_date || "N/A"}</td>
-                          <td style={{ fontWeight: 600 }}>{struct.total_amount || "N/A"}</td>
-                          <td>
-                            <button
-                              onClick={() => setSelectedDoc(doc)}
-                              style={{
-                                background: "var(--primary)",
-                                border: "none",
-                                color: "#fff",
-                                padding: "6px 12px",
-                                borderRadius: "6px",
-                                fontSize: "12px",
-                                cursor: "pointer",
-                                marginRight: "8px",
-                              }}
-                            >
-                              View Details
-                            </button>
-                            <button
-                              onClick={() => deleteDoc(doc.id)}
-                              style={{
-                                background: "transparent",
-                                border: "1px solid var(--accent-red)",
-                                color: "var(--accent-red)",
-                                padding: "5px 12px",
-                                borderRadius: "6px",
-                                fontSize: "12px",
-                                cursor: "pointer",
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-
-          {/* PANEL: Warranty Tracker */}
-          {activePanel === "warranty-tracker" && (
-            <div className="panel active">
-              <div className="tracker-controls">
-                <input
-                  type="text"
-                  className="search-input"
-                  placeholder="Search by product, provider, or serial number..."
-                  value={warrantySearch}
-                  onChange={(e) => setWarrantySearch(e.target.value)}
-                />
-              </div>
-              <div className="table-container">
-                <table className="data-table">
-                  <thead>
-                    <tr>
-                      <th>Product Name</th>
-                      <th>Provider / Brand</th>
-                      <th>Purchase Date</th>
-                      <th>Warranty Period</th>
-                      <th>Expiry Status</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredWarranties.map((doc) => {
-                      const struct = doc.structured_data;
-                      const isExpired = checkExpiry(struct.warranty_expiry_date);
-
-                      return (
-                        <tr key={doc.id}>
-                          <td style={{ fontWeight: 600, color: "var(--secondary)" }}>
-                            {struct.product_name || "N/A"}
-                          </td>
-                          <td>{struct.provider_name || "N/A"}</td>
-                          <td>{struct.purchase_date || "N/A"}</td>
-                          <td>{struct.warranty_period || "N/A"}</td>
-                          <td>
-                            {isExpired ? (
-                              <span className="badge badge-expired">Expired</span>
-                            ) : (
-                              <span className="badge badge-active">Active</span>
-                            )}
-                          </td>
-                          <td>
-                            <button
-                              onClick={() => setSelectedDoc(doc)}
-                              style={{
-                                background: "var(--primary)",
-                                border: "none",
-                                color: "#fff",
-                                padding: "6px 12px",
-                                borderRadius: "6px",
-                                fontSize: "12px",
-                                cursor: "pointer",
-                                marginRight: "8px",
-                              }}
-                            >
-                              View Details
-                            </button>
-                            <button
-                              onClick={() => deleteDoc(doc.id)}
-                              style={{
-                                background: "transparent",
-                                border: "1px solid var(--accent-red)",
-                                color: "var(--accent-red)",
-                                padding: "5px 12px",
-                                borderRadius: "6px",
-                                fontSize: "12px",
-                                cursor: "pointer",
-                              }}
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
         </div>
       </div>
-
-      {/* DOCUMENT DETAILS MODAL */}
-      {selectedDoc && (
-        <div className="modal active">
-          <div className="modal-content">
-            <span className="modal-close" onClick={() => setSelectedDoc(null)}>
-              &times;
-            </span>
-            <h2 style={{ marginBottom: "24px", fontFamily: "var(--font-display)" }}>
-              Document Details - {selectedDoc.filename}
-            </h2>
-            <div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", marginBottom: "24px" }}>
-                <div
-                  className="meta-card"
-                  style={{ gridColumn: "1 / -1", display: "flex", justifyContent: "space-between", alignItems: "center" }}
-                >
-                  <div>
-                    <strong>Document Type:</strong>{" "}
-                    <span className="badge badge-type">{selectedDoc.document_type}</span>
-                  </div>
-                  <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-                    <strong>Processed On:</strong> {new Date(selectedDoc.timestamp).toLocaleString()}
-                  </div>
-                </div>
-              </div>
-              <div style={{ fontWeight: 600, marginBottom: "12px" }}>Full Extracted JSON Data:</div>
-              <div className="text-viewer" id="modal-json-view" style={{ maxHeight: "350px" }}>
-                <button
-                  className="copy-btn"
-                  onClick={() => copyToClipboard(JSON.stringify(selectedDoc.structured_data, null, 2))}
-                >
-                  Copy
-                </button>
-                <span>{JSON.stringify(selectedDoc.structured_data, null, 2)}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </>
   );
 }

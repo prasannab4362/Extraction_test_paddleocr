@@ -21,8 +21,7 @@ if os.path.exists(".env"):
                 if len(parts) == 2:
                     os.environ[parts[0].strip()] = parts[1].strip()
 
-app = FastAPI(title="PaddleOCR + Groq Extractor")
-
+app = FastAPI(title="OCR extraction")
 
 # CORS Middleware
 app.add_middleware(
@@ -33,35 +32,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = "db.json"
-
 # In-memory OCR initialization helper (lazy loading)
 _ocr_instance = None
 
 def get_ocr():
     global _ocr_instance
     if _ocr_instance is None:
-        # Initialize PaddleOCR CPU
         _ocr_instance = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
     return _ocr_instance
 
-# Local JSON Database helpers
-def load_db():
-    if not os.path.exists(DB_PATH):
-        return []
-    try:
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-def save_db(data):
-    with open(DB_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
 # Helper to run OCR on an image (PIL Image or path)
 def process_ocr_image(image: Image.Image) -> str:
-    # Save PIL Image to temp bytes for PaddleOCR to read
     img_byte_arr = io.BytesIO()
     image.save(img_byte_arr, format='PNG')
     img_byte_arr = img_byte_arr.getvalue()
@@ -77,43 +58,79 @@ def process_ocr_image(image: Image.Image) -> str:
     return "\n".join(extracted_lines)
 
 # Structuring Prompt & Groq API Request
-def call_groq_api(raw_text: str, api_key: str) -> dict:
+def call_groq_api(raw_text: str, doc_type: str, api_key: str) -> dict:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     
-    system_prompt = (
-        "You are an AI data extractor. Your task is to extract information from raw OCR text and structure it into a clean, valid JSON object.\n"
-        "Identify if the document is an Invoice, Bill, or Warranty and extract the corresponding fields:\n\n"
-        "For Invoices / Bills:\n"
-        "- document_type: Invoice or Bill\n"
-        "- invoice_or_bill_number\n"
-        "- date\n"
-        "- due_date\n"
-        "- vendor_name\n"
-        "- vendor_address\n"
-        "- customer_name\n"
-        "- customer_address\n"
-        "- line_items: list of objects containing (description, quantity, unit_price, total_price)\n"
-        "- subtotal\n"
-        "- tax\n"
-        "- total_amount\n"
-        "- currency\n\n"
-        "For Warranties:\n"
-        "- document_type: Warranty\n"
-        "- product_name\n"
-        "- model_number\n"
-        "- serial_number\n"
-        "- purchase_date\n"
-        "- warranty_period\n"
-        "- warranty_expiry_date\n"
-        "- provider_name\n"
-        "- customer_name\n"
-        "- coverage_details\n\n"
-        "Respond ONLY with a valid JSON object matching the structures above. Do not include markdown code block formatting (such as ```json) or any conversational text."
-    )
+    # Custom prompts based on document type
+    prompts = {
+        "invoice": (
+            "You are an AI invoice extractor. Extract metadata from raw OCR text and structure it into a clean JSON object:\n"
+            "- document_type (Invoice or Bill)\n"
+            "- invoice_or_bill_number\n"
+            "- date\n"
+            "- due_date\n"
+            "- vendor_name\n"
+            "- vendor_address\n"
+            "- customer_name\n"
+            "- customer_address\n"
+            "- line_items: list of objects containing (description, quantity, unit_price, total_price)\n"
+            "- subtotal\n"
+            "- tax\n"
+            "- total_amount\n"
+            "- currency\n"
+        ),
+        "business_card": (
+            "You are an AI Business Card reader. Extract metadata from raw OCR text and structure it into a clean JSON object:\n"
+            "- document_type (Business Card)\n"
+            "- name\n"
+            "- job_title\n"
+            "- company_name\n"
+            "- email\n"
+            "- phone_number\n"
+            "- website\n"
+            "- address\n"
+        ),
+        "table": (
+            "You are an AI Table parser. Extract tabular structure and grid data from raw OCR text and structure it into a clean JSON object:\n"
+            "- document_type (Table Document)\n"
+            "- tables: list of tables, each represented as an object containing:\n"
+            "  - table_title (if any)\n"
+            "  - headers: list of column headers\n"
+            "  - rows: list of lists representing each row's data\n"
+        ),
+        "aadhaar": (
+            "You are an AI Aadhaar Card extractor. Extract Indian Aadhaar details from raw OCR text and structure it into a clean JSON object:\n"
+            "- document_type (Aadhaar Card)\n"
+            "- aadhaar_number (formatted as XXXX XXXX XXXX)\n"
+            "- full_name\n"
+            "- date_of_birth\n"
+            "- gender (Male/Female/Other)\n"
+            "- address (if visible)\n"
+        ),
+        "pan": (
+            "You are an AI PAN Card extractor. Extract Indian Permanent Account Number (PAN) details from raw OCR text and structure it into a clean JSON object:\n"
+            "- document_type (PAN Card)\n"
+            "- pan_number\n"
+            "- full_name\n"
+            "- fathers_name\n"
+            "- date_of_birth\n"
+        ),
+        "general": (
+            "You are an AI general document extractor. Extract structured information from raw OCR text into a clean JSON object:\n"
+            "- document_type (General Document)\n"
+            "- document_title\n"
+            "- key_metadata: list of key-value pairs representing important properties found in the document\n"
+            "- summary: a clear, concise paragraph summarizing the document contents\n"
+            "- structured_sections: list of objects containing (heading, text)\n"
+        )
+    }
+    
+    system_prompt = prompts.get(doc_type, prompts["general"])
+    system_prompt += "\nRespond ONLY with a valid JSON object. Do not include markdown code block formatting (such as ```json) or any conversational text."
     
     payload = {
         "model": "llama-3.3-70b-specdec",
@@ -135,19 +152,19 @@ def call_groq_api(raw_text: str, api_key: str) -> dict:
 async def extract_document(
     files: List[UploadFile] = File(...),
     mode: str = Form("merge"),  # "merge" or "batch"
-    x_groq_api_key: Optional[str] = Header(None)
+    doc_type: str = Form("general")  # "invoice", "business_card", "table", "aadhaar", "pan", "general"
 ):
-    # Fetch API Key from header or environment variable
-    api_key = x_groq_api_key or os.getenv("GROQ_API_KEY")
+    # Fetch API Key from environment variable only
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         raise HTTPException(
             status_code=400,
-            detail="Groq API Key is missing. Please provide it in the UI or set GROQ_API_KEY environment variable."
+            detail="Groq API Key is missing on the server backend. Please configure it in your .env file."
         )
 
     results = []
     
-    # We will process files. If PDF, we render pages to images.
+    # Process files
     all_pages = []
     for file in files:
         file_bytes = await file.read()
@@ -171,7 +188,7 @@ async def extract_document(
                 raise HTTPException(status_code=400, detail=f"Failed to open image file {file.filename}: {str(e)}")
 
     if mode == "merge":
-        # Merge Mode: Run OCR on all images, concatenate, call Groq once
+        # Merge Mode
         combined_text_lines = []
         for name, img in all_pages:
             print(f"[*] Running OCR on page/file: {name}")
@@ -181,45 +198,36 @@ async def extract_document(
         combined_text = "\n\n".join(combined_text_lines)
         
         try:
-            structured_data = call_groq_api(combined_text, api_key)
+            structured_data = call_groq_api(combined_text, doc_type, api_key)
             doc_id = str(uuid.uuid4())
-            doc_entry = {
+            results.append({
                 "id": doc_id,
                 "timestamp": datetime.datetime.now().isoformat(),
                 "filename": files[0].filename if len(files) == 1 else f"Merged ({len(files)} files)",
-                "document_type": structured_data.get("document_type", "Unknown"),
+                "document_type": structured_data.get("document_type", doc_type.capitalize()),
                 "structured_data": structured_data,
                 "raw_text": combined_text
-            }
-            db = load_db()
-            db.append(doc_entry)
-            save_db(db)
-            results.append(doc_entry)
+            })
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to structure merged text: {str(e)}")
             
     else:
-        # Batch Mode: Process each page/image separately
+        # Batch Mode
         for name, img in all_pages:
             print(f"[*] Running batch OCR on page/file: {name}")
             text = process_ocr_image(img)
             try:
-                structured_data = call_groq_api(text, api_key)
+                structured_data = call_groq_api(text, doc_type, api_key)
                 doc_id = str(uuid.uuid4())
-                doc_entry = {
+                results.append({
                     "id": doc_id,
                     "timestamp": datetime.datetime.now().isoformat(),
                     "filename": name,
-                    "document_type": structured_data.get("document_type", "Unknown"),
+                    "document_type": structured_data.get("document_type", doc_type.capitalize()),
                     "structured_data": structured_data,
                     "raw_text": text
-                }
-                db = load_db()
-                db.append(doc_entry)
-                save_db(db)
-                results.append(doc_entry)
+                })
             except Exception as e:
-                # Add error placeholder so loop continues
                 results.append({
                     "id": str(uuid.uuid4()),
                     "timestamp": datetime.datetime.now().isoformat(),
@@ -231,27 +239,9 @@ async def extract_document(
 
     return results
 
-@app.get("/api/documents")
-def get_documents():
-    return load_db()
-
-@app.delete("/api/documents/{doc_id}")
-def delete_document(doc_id: str):
-    db = load_db()
-    updated_db = [doc for doc in db if doc["id"] != doc_id]
-    if len(updated_db) == len(db):
-        raise HTTPException(status_code=404, detail="Document not found")
-    save_db(updated_db)
-    return {"status": "success", "message": "Document deleted"}
-
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 def index():
-    # Read and serve the index.html template
-    template_path = os.path.join("templates", "index.html")
-    if os.path.exists(template_path):
-        with open(template_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    return HTMLResponse(content="<h1>Frontend index.html not found under templates/ directory</h1>")
+    return HTMLResponse(content="<h1>FastAPI API active. Access frontend via port 3000.</h1>")
 
 if __name__ == "__main__":
     import uvicorn
