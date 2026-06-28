@@ -437,7 +437,7 @@ export default function ExtractorWorkspace() {
     fd.append("doc_type", type);
 
     try {
-      setLoadingMsg("Structuring extracted data with Groq Llama 3...");
+      setLoadingMsg("Structuring extracted data with Gemini 2.5 Flash Lite...");
       const res = await fetch(`${API_URL}/api/extract`, { method: "POST", body: fd });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -587,7 +587,7 @@ export default function ExtractorWorkspace() {
                 disabled={!selectedFiles.length || loading}
                 onClick={runExtraction}
               >
-                {loading ? "Processing…" : `Extract with PaddleOCR + Groq →`}
+                {loading ? "Processing…" : `Extract with PaddleOCR + Gemini →`}
               </button>
             </div>
 
@@ -622,7 +622,7 @@ export default function ExtractorWorkspace() {
                     <div className="empty-icon">{tool.icon}</div>
                     <p style={{ fontWeight: 600, color: "var(--text-heading)" }}>No results yet</p>
                     <p className="empty-text">
-                      Upload a file and click &quot;Extract with PaddleOCR + Groq&quot; to begin.
+                      Upload a file and click &quot;Extract with PaddleOCR + Gemini&quot; to begin.
                     </p>
                   </div>
                 ) : (
