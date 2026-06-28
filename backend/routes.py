@@ -7,7 +7,7 @@ import logging
 from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
-from backend.config import MAX_FILE_SIZE_MB, MAX_FILES, GROQ_API_KEY
+from backend.config import MAX_FILE_SIZE_MB, MAX_FILES, GEMINI_API_KEY
 from backend.ocr import load_pages_from_bytes, run_ocr
 from backend.llm import call_groq_api, get_regex_fallback
 
@@ -18,8 +18,8 @@ router = APIRouter()
 def health():
     return {
         "status": "ok",
-        "engine": "PaddleOCR + Groq Llama 3",
-        "groq_configured": bool(GROQ_API_KEY)
+        "engine": "PaddleOCR + Gemini 2.5 Flash Lite",
+        "gemini_configured": bool(GEMINI_API_KEY)
     }
 
 @router.post("/api/extract")
