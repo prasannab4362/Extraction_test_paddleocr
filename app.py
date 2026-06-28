@@ -12,7 +12,17 @@ import pypdfium2 as pdfium
 from PIL import Image
 from paddleocr import PaddleOCR
 
+# Load local .env file if present
+if os.path.exists(".env"):
+    with open(".env", "r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip() and not line.startswith("#"):
+                parts = line.strip().split("=", 1)
+                if len(parts) == 2:
+                    os.environ[parts[0].strip()] = parts[1].strip()
+
 app = FastAPI(title="PaddleOCR + Groq Extractor")
+
 
 # CORS Middleware
 app.add_middleware(

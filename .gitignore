@@ -6,3 +6,5 @@ ollama_data/
 *.tmp
 *_extracted.json
 __pycache__/
+.env
+
