@@ -171,8 +171,8 @@ export default function Home() {
       {/* Sidebar Navigation */}
       <div className="sidebar">
         <div className="brand">
-          <div className="brand-logo">D</div>
-          <div className="brand-name">DocuMind</div>
+          <div className="brand-logo">O</div>
+          <div className="brand-name">OCR extraction</div>
         </div>
         <ul className="nav-list">
           <li
@@ -523,7 +523,7 @@ export default function Home() {
                                 border: "none",
                                 color: "#fff",
                                 padding: "6px 12px",
-                                border-radius: "6px",
+                                borderRadius: "6px",
                                 fontSize: "12px",
                                 cursor: "pointer",
                                 marginRight: "8px",
@@ -538,7 +538,7 @@ export default function Home() {
                                 border: "1px solid var(--accent-red)",
                                 color: "var(--accent-red)",
                                 padding: "5px 12px",
-                                border-radius: "6px",
+                                borderRadius: "6px",
                                 fontSize: "12px",
                                 cursor: "pointer",
                               }}
@@ -607,7 +607,7 @@ export default function Home() {
                                 border: "none",
                                 color: "#fff",
                                 padding: "6px 12px",
-                                border-radius: "6px",
+                                borderRadius: "6px",
                                 fontSize: "12px",
                                 cursor: "pointer",
                                 marginRight: "8px",
@@ -622,7 +622,7 @@ export default function Home() {
                                 border: "1px solid var(--accent-red)",
                                 color: "var(--accent-red)",
                                 padding: "5px 12px",
-                                border-radius: "6px",
+                                borderRadius: "6px",
                                 fontSize: "12px",
                                 cursor: "pointer",
                               }}
