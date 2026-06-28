@@ -122,8 +122,8 @@ Return ONLY a valid JSON object with these exact keys:
 If a field is not found, use null. Do NOT add markdown, code fences, or explanation.""",
 }
 
-def call_groq_api(raw_text: str, doc_type: str, retries: int = 2) -> dict:
-    """Send raw OCR text to Gemini 2.5 Flash Lite for JSON structuring (legacy naming for backward compat)."""
+def call_gemini_multimodal(pages: list, doc_type: str, retries: int = 2) -> dict:
+    """Send image parts directly to Gemini 2.5 Flash Lite for extraction and JSON structuring."""
     if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -131,15 +131,34 @@ def call_groq_api(raw_text: str, doc_type: str, retries: int = 2) -> dict:
         )
 
     system_instruction = GEMINI_PROMPTS.get(doc_type, GEMINI_PROMPTS["general"])
-    
-    # Standard Gemini API v1beta generateContent REST payload
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+
+    # Build the contents array containing both text instruction and image data
+    parts = []
+    
+    # 1. Add direct instruction prompt
+    parts.append({"text": "Extract all structured information from the provided document image(s) matching the system instructions. Also include the key 'all_text_lines' containing a flat list of all readable text lines parsed from the image."})
+    
+    # 2. Add base64 image data parts
+    import base64
+    import io
+    for label, img in pages:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
+        parts.append({
+            "inlineData": {
+                "mimeType": "image/jpeg",
+                "data": b64_data
+            }
+        })
+
     payload = {
         "systemInstruction": {
             "parts": [{"text": system_instruction}]
         },
         "contents": [{
-            "parts": [{"text": f"Raw OCR Text:\n{raw_text}\n\nStructured JSON output matching the format instructions:"}]
+            "parts": parts
         }],
         "generationConfig": {
             "temperature": 0.05,
@@ -154,15 +173,12 @@ def call_groq_api(raw_text: str, doc_type: str, retries: int = 2) -> dict:
                 url,
                 headers={"Content-Type": "application/json"},
                 json=payload,
-                timeout=90
+                timeout=120
             )
             resp.raise_for_status()
             res_data = resp.json()
             
-            # Extract content text from Gemini response structure
             content = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            
-            # Clean possible markdown wrapping
             content = re.sub(r"^```json\s*|^```\s*|\s*```$", "", content, flags=re.M).strip()
             return json.loads(content)
         except requests.HTTPError as e:
@@ -177,9 +193,9 @@ def call_groq_api(raw_text: str, doc_type: str, retries: int = 2) -> dict:
             if attempt < retries:
                 time.sleep(1)
             else:
-                raise HTTPException(status_code=500, detail=f"Gemini parsing failed: {e}")
+                raise HTTPException(status_code=500, detail=f"Gemini multimodal parsing failed: {e}")
 
-    raise HTTPException(status_code=500, detail=f"All Gemini connection attempts failed: {last_err}")
+    raise HTTPException(status_code=500, detail=f"All Gemini multimodal attempts failed: {last_err}")
 
 def _find(pattern, text, flags=0, group=0):
     m = re.search(pattern, text, flags)
