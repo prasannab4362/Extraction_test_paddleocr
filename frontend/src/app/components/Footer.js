@@ -28,7 +28,7 @@ export default function Footer() {
             <div className="footer-brand-name">OCR extraction</div>
             <p className="footer-tagline">
               Extract structured data from any document — invoices, ID cards, business cards,
-              and more. Powered by PaddleOCR and Groq AI.
+              and more. Powered by PaddleOCR and Gemini AI.
             </p>
           </div>
 
