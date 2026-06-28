@@ -8,8 +8,8 @@ from typing import List
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from backend.config import MAX_FILE_SIZE_MB, MAX_FILES, GEMINI_API_KEY
-from backend.ocr import load_pages_from_bytes, run_ocr
-from backend.llm import call_groq_api, get_regex_fallback
+from backend.ocr import load_pages_from_bytes
+from backend.llm import call_gemini_multimodal, get_regex_fallback
 
 logger = logging.getLogger("ocr-extraction.routes")
 router = APIRouter()
@@ -18,7 +18,7 @@ router = APIRouter()
 def health():
     return {
         "status": "ok",
-        "engine": "PaddleOCR + Gemini 2.5 Flash Lite",
+        "engine": "Google Gemini 2.5 Flash Lite Multimodal",
         "gemini_configured": bool(GEMINI_API_KEY)
     }
 
@@ -51,18 +51,12 @@ async def extract_documents(
     results = []
     
     if mode == "merge":
-        parts = []
-        for label, img in all_pages:
-            logger.info(f"Processing OCR for: {label}")
-            text = run_ocr(img)
-            parts.append(f"=== {label} ===\n{text}")
-        combined = "\n\n".join(parts)
-
+        logger.info(f"Processing multimodal merge extraction for {len(all_pages)} pages.")
         try:
-            structured = call_groq_api(combined, doc_type)
+            structured = call_gemini_multimodal(all_pages, doc_type)
         except HTTPException:
-            logger.warning("Groq API unavailable. Running fallback regex parser.")
-            structured = get_regex_fallback(combined, doc_type)
+            logger.warning("Gemini multimodal call failed. Using offline regex fallback.")
+            structured = get_regex_fallback("", doc_type)
 
         results.append({
             "id": str(uuid.uuid4()),
@@ -70,17 +64,16 @@ async def extract_documents(
             "filename": files[0].filename if len(files) == 1 else f"Merged ({len(files)} files)",
             "document_type": structured.get("document_type", doc_type.capitalize()),
             "structured_data": structured,
-            "raw_text": combined
+            "raw_text": "\n".join(structured.get("all_text_lines", []))
         })
     else:
         for label, img in all_pages:
-            logger.info(f"Processing OCR for batch file: {label}")
-            text = run_ocr(img)
+            logger.info(f"Processing multimodal batch extraction for page: {label}")
             try:
-                structured = call_groq_api(text, doc_type)
+                structured = call_gemini_multimodal([(label, img)], doc_type)
             except HTTPException:
-                logger.warning(f"Groq API unavailable for {label}. Running fallback regex parser.")
-                structured = get_regex_fallback(text, doc_type)
+                logger.warning(f"Gemini multimodal call failed for {label}. Using offline regex fallback.")
+                structured = get_regex_fallback("", doc_type)
 
             results.append({
                 "id": str(uuid.uuid4()),
@@ -88,7 +81,7 @@ async def extract_documents(
                 "filename": label,
                 "document_type": structured.get("document_type", doc_type.capitalize()),
                 "structured_data": structured,
-                "raw_text": text
+                "raw_text": "\n".join(structured.get("all_text_lines", []))
             })
 
     return results
