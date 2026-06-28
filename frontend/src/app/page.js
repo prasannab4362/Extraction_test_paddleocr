@@ -83,6 +83,35 @@ export default function Home() {
     setActiveTab("structured");
   };
 
+  const downloadExcel = async () => {
+    try {
+      const response = await fetch("http://127.0.0.1:8000/api/export", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(results),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to export data");
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `extracted_${activeTile}_data.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("Error exporting spreadsheet: " + err.message);
+    }
+  };
+
+
   // Extraction Cards metadata
   const tiles = [
     { id: "invoice", name: "Invoice Extractor", icon: "🧾", desc: "Extract totals, vendor details, tax, and line items." },
@@ -253,26 +282,53 @@ export default function Home() {
 
                 {/* Right column: Results Viewer */}
                 <div className="results-container">
-                  <div className="tabs">
-                    <div
-                      className={`tab ${activeTab === "structured" ? "active" : ""}`}
-                      onClick={() => setActiveTab("structured")}
-                    >
-                      Structured Data
+                  <div className="tabs" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <div
+                        className={`tab ${activeTab === "structured" ? "active" : ""}`}
+                        onClick={() => setActiveTab("structured")}
+                      >
+                        Structured Data
+                      </div>
+                      <div
+                        className={`tab ${activeTab === "raw-text" ? "active" : ""}`}
+                        onClick={() => setActiveTab("raw-text")}
+                      >
+                        Raw Text
+                      </div>
+                      <div
+                        className={`tab ${activeTab === "json" ? "active" : ""}`}
+                        onClick={() => setActiveTab("json")}
+                      >
+                        Raw JSON
+                      </div>
                     </div>
-                    <div
-                      className={`tab ${activeTab === "raw-text" ? "active" : ""}`}
-                      onClick={() => setActiveTab("raw-text")}
-                    >
-                      Raw Text
-                    </div>
-                    <div
-                      className={`tab ${activeTab === "json" ? "active" : ""}`}
-                      onClick={() => setActiveTab("json")}
-                    >
-                      Raw JSON
-                    </div>
+                    {results.length > 0 && (
+                      <button 
+                        onClick={downloadExcel}
+                        style={{
+                          background: "var(--primary)",
+                          border: "none",
+                          color: "#fff",
+                          padding: "8px 16px",
+                          borderRadius: "var(--radius-md)",
+                          cursor: "pointer",
+                          fontWeight: 600,
+                          fontSize: "13px",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          boxShadow: "0 2px 8px var(--primary-glow)",
+                          transition: "transform 0.2s"
+                        }}
+                        onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.02)"}
+                        onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1)"}
+                      >
+                        📥 Download spreadsheet
+                      </button>
+                    )}
                   </div>
+
 
                   {/* Tab: Structured Data */}
                   <div className={`tab-content ${activeTab === "structured" ? "active" : ""}`}>

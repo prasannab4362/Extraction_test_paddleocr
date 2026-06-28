@@ -4,9 +4,10 @@ import datetime
 import json
 import io
 import requests
+import csv
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pypdfium2 as pdfium
 from PIL import Image
@@ -238,6 +239,61 @@ async def extract_document(
                 })
 
     return results
+
+@app.post("/api/export")
+def export_csv(data: List[dict]):
+    if not data:
+        raise HTTPException(status_code=400, detail="No data provided to export")
+        
+    output = io.StringIO()
+    # Write BOM for Excel UTF-8 support
+    output.write('\ufeff')
+    writer = csv.writer(output)
+    
+    # Flatten the data structure: we only want the inner structured_data values
+    flat_data = []
+    headers_set = set()
+    
+    for item in data:
+        struct = item.get("structured_data", {})
+        # If there's an error or it's empty, skip or include error column
+        if "error" in struct:
+            flat_item = {"filename": item.get("filename", ""), "error": struct["error"]}
+        else:
+            flat_item = {"filename": item.get("filename", ""), **struct}
+        
+        flat_data.append(flat_item)
+        headers_set.update(flat_item.keys())
+        
+    # Order headers logically: 'filename' first, then 'document_type' if present, then others
+    headers = ["filename"]
+    if "document_type" in headers_set:
+        headers.append("document_type")
+    
+    for h in sorted(list(headers_set)):
+        if h not in headers:
+            headers.append(h)
+            
+    writer.writerow(headers)
+    
+    for item in flat_data:
+        row = []
+        for h in headers:
+            val = item.get(h, "")
+            # If the value is a list (like line items or tables), format as readable JSON or string
+            if isinstance(val, (dict, list)):
+                val = json.dumps(val)
+            row.append(str(val))
+        writer.writerow(row)
+        
+    # Seek to start
+    stream = io.BytesIO(output.getvalue().encode('utf-8-sig'))
+    
+    return StreamingResponse(
+        stream,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=extracted_data.csv"}
+    )
 
 @app.get("/")
 def index():
