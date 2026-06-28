@@ -12,7 +12,7 @@ def get_ocr() -> PaddleOCR:
     global _ocr_instance
     if _ocr_instance is None:
         logger.info("Initializing PaddleOCR engine...")
-        _ocr_instance = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+        _ocr_instance = PaddleOCR(lang="en")
         logger.info("PaddleOCR engine loaded successfully.")
     return _ocr_instance
 
