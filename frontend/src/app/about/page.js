@@ -44,7 +44,7 @@ export default function AboutPage() {
                 uploaded image or PDF with high accuracy.
               </li>
               <li>
-                <strong>Groq + Llama 3</strong> — a state-of-the-art LLM (Large Language Model) that understands
+                <strong>Gemini 2.5 Flash Lite</strong> — a state-of-the-art LLM (Large Language Model) that understands
                 the extracted raw text and structures it into clean, typed JSON based on the document type.
               </li>
             </ul>
