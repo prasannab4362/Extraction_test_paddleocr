@@ -1,46 +1,40 @@
 import os
+import re
 import uuid
 import datetime
 import json
 import io
-import requests
 import csv
 import logging
 from typing import List
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pypdfium2 as pdfium
 from PIL import Image
 from paddleocr import PaddleOCR
 
-# ─── Logging ───────────────────────────────────────────────────────────────────
+# ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ocr-extraction")
 
-# ─── Load .env if present (local dev only) ─────────────────────────────────────
+# ─── Load .env ────────────────────────────────────────────────────────────────
 if os.path.exists(".env"):
     with open(".env", "r", encoding="utf-8") as f:
         for line in f:
-            if line.strip() and not line.startswith("#"):
-                parts = line.strip().split("=", 1)
-                if len(parts) == 2:
-                    key, val = parts[0].strip(), parts[1].strip()
-                    if key not in os.environ:
-                        os.environ[key] = val
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                if k.strip() not in os.environ:
+                    os.environ[k.strip()] = v.strip()
 
-# ─── Config ────────────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# ─── Config ───────────────────────────────────────────────────────────────────
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "15"))
-MAX_FILES = int(os.getenv("MAX_FILES", "10"))
+MAX_FILE_MB     = int(os.getenv("MAX_FILE_SIZE_MB", "20"))
+MAX_FILES       = int(os.getenv("MAX_FILES", "20"))
 
-# ─── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="OCR extraction API",
-    description="AI-powered document extraction service",
-    version="1.0.0"
-)
+# ─── FastAPI app ─────────────────────────────────────────────────────────────
+app = FastAPI(title="OCR extraction API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,235 +44,282 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── OCR (lazy-loaded singleton) ──────────────────────────────────────────────
-_ocr_instance = None
+# ─── PaddleOCR singleton (lazy) ───────────────────────────────────────────────
+_ocr = None
 
 def get_ocr():
-    global _ocr_instance
-    if _ocr_instance is None:
-        logger.info("Initializing PaddleOCR...")
-        _ocr_instance = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+    global _ocr
+    if _ocr is None:
+        logger.info("Initialising PaddleOCR...")
+        _ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
         logger.info("PaddleOCR ready.")
-    return _ocr_instance
+    return _ocr
 
-# ─── OCR Helper ────────────────────────────────────────────────────────────────
-def process_ocr_image(image: Image.Image) -> str:
+
+def run_ocr(image: Image.Image) -> str:
+    """Run PaddleOCR on a PIL image and return concatenated text lines."""
     buf = io.BytesIO()
     image.save(buf, format="PNG")
-    raw = buf.getvalue()
-    ocr = get_ocr()
-    result = ocr.ocr(raw, cls=True)
+    result = get_ocr().ocr(buf.getvalue(), cls=True)
     lines = []
     if result and result[0]:
-        for line in result[0]:
-            lines.append(line[1][0])
+        for item in result[0]:
+            lines.append(item[1][0])
     return "\n".join(lines)
 
-# ─── Groq LLM Structuring ─────────────────────────────────────────────────────
-PROMPTS = {
-    "invoice": (
-        "You are an AI invoice extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
-        "document_type, invoice_or_bill_number, date, due_date, vendor_name, vendor_address, "
-        "customer_name, customer_address, line_items (list of {description, quantity, unit_price, total_price}), "
-        "subtotal, tax, total_amount, currency."
-    ),
-    "business_card": (
-        "You are a business card reader. From the raw OCR text, extract and return ONLY a JSON object with:\n"
-        "document_type, name, job_title, company_name, email, phone_number, website, address."
-    ),
-    "table": (
-        "You are a table extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
-        "document_type, tables (list of {table_title, headers (list), rows (list of lists)})."
-    ),
-    "aadhaar": (
-        "You are an Aadhaar Card extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
-        "document_type, aadhaar_number (formatted XXXX XXXX XXXX), full_name, date_of_birth, gender, address."
-    ),
-    "pan": (
-        "You are a PAN Card extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
-        "document_type, pan_number, full_name, fathers_name, date_of_birth."
-    ),
-    "general": (
-        "You are a general document extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
-        "document_type, document_title, key_metadata (list of {key, value}), "
-        "summary (paragraph), structured_sections (list of {heading, text})."
-    ),
-}
 
-def call_groq_api(raw_text: str, doc_type: str) -> dict:
-    if not GROQ_API_KEY:
-        raise HTTPException(
-            status_code=503,
-            detail="Server configuration error: Groq API key is not set. Please contact the administrator."
-        )
-    
-    prompt = PROMPTS.get(doc_type, PROMPTS["general"])
-    prompt += "\nRespond ONLY with valid JSON. No markdown, no explanation, no code fences."
+# ─── Regex-based structured extraction (no LLM needed) ──────────────────────
 
-    response = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": "llama-3.3-70b-specdec",
-            "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": f"Raw OCR Text:\n{raw_text}\n\nJSON:"},
-            ],
-            "temperature": 0.1,
-            "response_format": {"type": "json_object"},
-        },
-        timeout=90,
-    )
-    response.raise_for_status()
-    content = response.json()["choices"][0]["message"]["content"].strip()
-    return json.loads(content)
+def _find(pattern, text, flags=0, group=0):
+    m = re.search(pattern, text, flags)
+    return m.group(group).strip() if m else None
 
-# ─── File validation ──────────────────────────────────────────────────────────
-def validate_files(files: List[UploadFile]):
-    if len(files) > MAX_FILES:
-        raise HTTPException(status_code=400, detail=f"Maximum {MAX_FILES} files allowed per request.")
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+def extract_structured(raw_text: str, doc_type: str) -> dict:
+    """
+    Extract structured fields from raw OCR text using regex patterns.
+    No external API required — works fully offline.
+    """
+    lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+
+    if doc_type == "aadhaar":
+        aadhaar = _find(r"\b\d{4}\s?\d{4}\s?\d{4}\b", raw_text)
+        dob     = _find(r"\b\d{2}[/\-]\d{2}[/\-]\d{4}\b", raw_text)
+        gender  = _find(r"\b(Male|Female|MALE|FEMALE|Transgender)\b", raw_text)
+        phone   = _find(r"\b[6-9]\d{9}\b", raw_text)
+        # Name is typically the line after "Government of India" or before the Aadhaar number block
+        name = None
+        for i, l in enumerate(lines):
+            if re.search(r"government of india", l, re.I):
+                if i + 1 < len(lines):
+                    name = lines[i + 1]
+                break
+        # Fallback: first line that is all letters / spaces and length > 3
+        if not name:
+            for l in lines:
+                if re.match(r"^[A-Za-z\s]{4,}$", l) and l.lower() not in ("government of india", "unique identification authority of india"):
+                    name = l
+                    break
+        return {
+            "document_type": "Aadhaar Card",
+            "aadhaar_number": aadhaar,
+            "full_name": name,
+            "date_of_birth": dob,
+            "gender": gender,
+            "phone_linked": phone,
+            "all_text_lines": lines,
+        }
+
+    elif doc_type == "pan":
+        pan  = _find(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b", raw_text)
+        dob  = _find(r"\b\d{2}/\d{2}/\d{4}\b", raw_text)
+        # Name is the line after "Name"
+        name = None
+        fathers_name = None
+        for i, l in enumerate(lines):
+            if re.match(r"^Name$", l, re.I) and i + 1 < len(lines):
+                name = lines[i + 1]
+            if re.match(r"father", l, re.I) and i + 1 < len(lines):
+                fathers_name = lines[i + 1]
+        return {
+            "document_type": "PAN Card",
+            "pan_number": pan,
+            "full_name": name,
+            "fathers_name": fathers_name,
+            "date_of_birth": dob,
+            "all_text_lines": lines,
+        }
+
+    elif doc_type == "business_card":
+        email   = _find(r"\b[\w.%+\-]+@[\w.\-]+\.[a-zA-Z]{2,}\b", raw_text)
+        phone   = _find(r"(?:\+91[-\s]?)?[6-9]\d{9}|\+?[\d\s\-().]{8,15}", raw_text)
+        website = _find(r"(?:www\.|https?://)[^\s,]+", raw_text, re.I)
+        # Name is usually the first significant line
+        name    = lines[0] if lines else None
+        company = None
+        for l in lines[1:]:
+            if not re.search(r"@|www\.|http|[+\d\-()]{7,}", l):
+                company = l
+                break
+        return {
+            "document_type": "Business Card",
+            "name": name,
+            "company_name": company,
+            "email": email,
+            "phone_number": phone,
+            "website": website,
+            "all_text_lines": lines,
+        }
+
+    elif doc_type == "invoice":
+        inv_no  = _find(r"(?:Invoice|Bill|INV|No\.?)[#:\s\-]*([A-Z0-9/\-]+)", raw_text, re.I, 1)
+        date    = _find(r"\b\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\b", raw_text)
+        total   = _find(r"(?:Grand\s*Total|Total\s*Amount|Amount\s*Due|TOTAL)[:\s]*(?:Rs\.?|₹|INR|\$)?[\s]*([\d,]+\.?\d*)", raw_text, re.I, 1)
+        tax     = _find(r"(?:GST|Tax|VAT)[:\s]*(?:Rs\.?|₹)?[\s]*([\d,]+\.?\d*)", raw_text, re.I, 1)
+        vendor  = lines[0] if lines else None
+        return {
+            "document_type": "Invoice / Bill",
+            "vendor_name": vendor,
+            "invoice_number": inv_no,
+            "date": date,
+            "tax_amount": tax,
+            "total_amount": total,
+            "all_text_lines": lines,
+        }
+
+    elif doc_type == "table":
+        # Try to detect table rows: lines with multiple whitespace-separated tokens
+        table_rows = []
+        for l in lines:
+            tokens = re.split(r"\s{2,}|\t", l)
+            tokens = [t.strip() for t in tokens if t.strip()]
+            if len(tokens) >= 2:
+                table_rows.append(tokens)
+        headers = table_rows[0] if table_rows else []
+        rows    = table_rows[1:] if len(table_rows) > 1 else []
+        return {
+            "document_type": "Table Document",
+            "detected_headers": headers,
+            "detected_rows": rows,
+            "total_rows": len(rows),
+            "all_text_lines": lines,
+        }
+
+    else:  # general
+        # Key–value pairs: lines like "Key: Value" or "Key  Value"
+        kv_pairs = []
+        for l in lines:
+            m = re.match(r"^([A-Za-z][^:]{2,30}):\s*(.+)$", l)
+            if m:
+                kv_pairs.append({"key": m.group(1).strip(), "value": m.group(2).strip()})
+        return {
+            "document_type": "General Document",
+            "extracted_key_values": kv_pairs,
+            "total_lines": len(lines),
+            "all_text_lines": lines,
+        }
+
+
+# ─── File helpers ─────────────────────────────────────────────────────────────
+
+def load_pages(file_bytes: bytes, filename: str) -> list:
+    """Return list of (label, PIL.Image) tuples from an image or PDF."""
+    pages = []
+    fname = (filename or "").lower()
+    if fname.endswith(".pdf"):
+        pdf = pdfium.PdfDocument(file_bytes)
+        for i in range(len(pdf)):
+            bmp = pdf[i].render(scale=2)
+            pages.append((f"{filename} (Page {i+1})", bmp.to_pil()))
+    else:
+        pages.append((filename, Image.open(io.BytesIO(file_bytes)).convert("RGB")))
+    return pages
+
+
+# ─── Routes ──────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def index():
-    return HTMLResponse("<h1>OCR extraction API is running.</h1><p>Access the frontend via Vercel.</p>")
+    return HTMLResponse(
+        "<h1>OCR extraction API is live.</h1>"
+        "<p>Frontend: <a href='http://localhost:3000'>localhost:3000</a></p>"
+    )
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "groq_configured": bool(GROQ_API_KEY)}
+    return {"status": "ok", "engine": "PaddleOCR", "version": "2.0.0"}
+
 
 @app.post("/api/extract")
-async def extract_document(
-    request: Request,
+async def extract(
     files: List[UploadFile] = File(...),
     mode: str = Form("merge"),
     doc_type: str = Form("general"),
 ):
-    validate_files(files)
-    logger.info(f"Extract request: doc_type={doc_type}, mode={mode}, files={len(files)}")
+    if len(files) > MAX_FILES:
+        raise HTTPException(400, f"Max {MAX_FILES} files per request.")
 
-    all_pages = []
+    logger.info(f"Extract — doc_type={doc_type} mode={mode} files={len(files)}")
 
-    for file in files:
-        file_bytes = await file.read()
-
-        # File size check
-        size_mb = len(file_bytes) / (1024 * 1024)
-        if size_mb > MAX_FILE_SIZE_MB:
-            raise HTTPException(
-                status_code=400,
-                detail=f"File '{file.filename}' is {size_mb:.1f} MB. Maximum allowed is {MAX_FILE_SIZE_MB} MB."
-            )
-
-        fname = (file.filename or "").lower()
-        if fname.endswith(".pdf"):
-            try:
-                pdf = pdfium.PdfDocument(file_bytes)
-                for page_idx in range(len(pdf)):
-                    page = pdf[page_idx]
-                    bitmap = page.render(scale=2)
-                    pil_img = bitmap.to_pil()
-                    all_pages.append((f"{file.filename} (Page {page_idx + 1})", pil_img))
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse PDF '{file.filename}': {e}")
-        else:
-            try:
-                pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
-                all_pages.append((file.filename, pil_img))
-            except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to open image '{file.filename}': {e}")
+    # ── Load all pages ──
+    all_pages: list = []
+    for f in files:
+        raw = await f.read()
+        if len(raw) / (1024 * 1024) > MAX_FILE_MB:
+            raise HTTPException(400, f"'{f.filename}' exceeds {MAX_FILE_MB} MB limit.")
+        try:
+            all_pages.extend(load_pages(raw, f.filename))
+        except Exception as e:
+            raise HTTPException(400, f"Cannot open '{f.filename}': {e}")
 
     if not all_pages:
-        raise HTTPException(status_code=400, detail="No valid pages found in uploaded files.")
+        raise HTTPException(400, "No valid pages found.")
 
     results = []
 
     if mode == "merge":
-        combined_parts = []
-        for name, img in all_pages:
-            logger.info(f"OCR: {name}")
-            text = process_ocr_image(img)
-            combined_parts.append(f"=== {name} ===\n{text}")
-        combined_text = "\n\n".join(combined_parts)
-
-        try:
-            structured = call_groq_api(combined_text, doc_type)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"AI structuring failed: {e}")
-
+        # OCR all pages, concatenate text, extract once
+        parts = []
+        for label, img in all_pages:
+            logger.info(f"OCR: {label}")
+            text = run_ocr(img)
+            parts.append(f"=== {label} ===\n{text}")
+        combined = "\n\n".join(parts)
+        structured = extract_structured(combined, doc_type)
         results.append({
             "id": str(uuid.uuid4()),
             "timestamp": datetime.datetime.utcnow().isoformat(),
             "filename": files[0].filename if len(files) == 1 else f"Merged ({len(files)} files)",
-            "document_type": structured.get("document_type", doc_type.capitalize()),
+            "document_type": structured.get("document_type", doc_type),
             "structured_data": structured,
-            "raw_text": combined_text,
+            "raw_text": combined,
         })
 
-    else:  # batch
-        for name, img in all_pages:
-            logger.info(f"Batch OCR: {name}")
-            text = process_ocr_image(img)
-            try:
-                structured = call_groq_api(text, doc_type)
-                results.append({
-                    "id": str(uuid.uuid4()),
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                    "filename": name,
-                    "document_type": structured.get("document_type", doc_type.capitalize()),
-                    "structured_data": structured,
-                    "raw_text": text,
-                })
-            except HTTPException:
-                raise
-            except Exception as e:
-                results.append({
-                    "id": str(uuid.uuid4()),
-                    "timestamp": datetime.datetime.utcnow().isoformat(),
-                    "filename": name,
-                    "document_type": "Error",
-                    "structured_data": {"error": str(e)},
-                    "raw_text": text,
-                })
+    else:  # batch — each page independently
+        for label, img in all_pages:
+            logger.info(f"Batch OCR: {label}")
+            text = run_ocr(img)
+            structured = extract_structured(text, doc_type)
+            results.append({
+                "id": str(uuid.uuid4()),
+                "timestamp": datetime.datetime.utcnow().isoformat(),
+                "filename": label,
+                "document_type": structured.get("document_type", doc_type),
+                "structured_data": structured,
+                "raw_text": text,
+            })
 
-    logger.info(f"Extraction complete: {len(results)} result(s)")
+    logger.info(f"Done — {len(results)} result(s)")
     return results
 
 
 @app.post("/api/export")
 def export_csv(data: List[dict]):
     if not data:
-        raise HTTPException(status_code=400, detail="No data to export.")
+        raise HTTPException(400, "No data to export.")
 
     output = io.StringIO()
     writer = csv.writer(output)
 
-    flat_rows = []
-    all_keys = set()
-
+    flat_rows, all_keys = [], set()
     for item in data:
         struct = item.get("structured_data", {})
-        flat = {"filename": item.get("filename", ""), "timestamp": item.get("timestamp", "")}
-        if "error" in struct:
-            flat["error"] = struct["error"]
-        else:
-            for k, v in struct.items():
-                flat[k] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+        flat = {
+            "filename":  item.get("filename", ""),
+            "timestamp": item.get("timestamp", ""),
+            "raw_text":  item.get("raw_text", "")[:500],  # first 500 chars
+        }
+        for k, v in struct.items():
+            if k == "all_text_lines":
+                continue  # skip the verbose lines list
+            flat[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v or "")
         flat_rows.append(flat)
         all_keys.update(flat.keys())
 
-    # Order columns: filename first, timestamp second, then alphabetical
-    headers = ["filename", "timestamp"]
-    for k in sorted(all_keys):
-        if k not in headers:
-            headers.append(k)
-
+    # Stable column order
+    priority = ["filename", "timestamp", "document_type"]
+    headers = priority + sorted(k for k in all_keys if k not in priority)
     writer.writerow(headers)
     for row in flat_rows:
         writer.writerow([row.get(h, "") for h in headers])
@@ -294,4 +335,4 @@ def export_csv(data: List[dict]):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=False)
