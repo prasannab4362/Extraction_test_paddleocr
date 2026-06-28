@@ -4,11 +4,11 @@ import time
 import logging
 import requests
 from fastapi import HTTPException
-from backend.config import GROQ_API_KEY, GROQ_MODEL
+from backend.config import GEMINI_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger("ocr-extraction.llm")
 
-GROQ_PROMPTS = {
+GEMINI_PROMPTS = GROQ_PROMPTS = {
     "invoice": """You are an expert invoice parser. Given raw OCR text from an invoice or bill, extract every relevant field accurately.
 Return ONLY a valid JSON object with these exact keys:
 {
@@ -123,57 +123,63 @@ If a field is not found, use null. Do NOT add markdown, code fences, or explanat
 }
 
 def call_groq_api(raw_text: str, doc_type: str, retries: int = 2) -> dict:
-    """Send raw OCR text to Groq for JSON structuring."""
-    if not GROQ_API_KEY:
+    """Send raw OCR text to Gemini 2.5 Flash Lite for JSON structuring (legacy naming for backward compat)."""
+    if not GEMINI_API_KEY:
         raise HTTPException(
             status_code=503,
-            detail="GROQ_API_KEY is not configured on the server. Please add it to your .env file."
+            detail="GEMINI_API_KEY is not configured on the server. Please add it to your .env file."
         )
 
-    prompt = GROQ_PROMPTS.get(doc_type, GROQ_PROMPTS["general"])
+    system_instruction = GEMINI_PROMPTS.get(doc_type, GEMINI_PROMPTS["general"])
+    
+    # Standard Gemini API v1beta generateContent REST payload
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
     payload = {
-        "model": GROQ_MODEL,
-        "messages": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Raw OCR Text:\n{raw_text}\n\nJSON:"}
-        ],
-        "temperature": 0.05,
-        "max_tokens": 2048,
-        "response_format": {"type": "json_object"}
+        "systemInstruction": {
+            "parts": [{"text": system_instruction}]
+        },
+        "contents": [{
+            "parts": [{"text": f"Raw OCR Text:\n{raw_text}\n\nStructured JSON output matching the format instructions:"}]
+        }],
+        "generationConfig": {
+            "temperature": 0.05,
+            "responseMimeType": "application/json"
+        }
     }
 
     last_err = None
     for attempt in range(retries + 1):
         try:
             resp = requests.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {GROQ_API_KEY}",
-                    "Content-Type": "application/json"
-                },
+                url,
+                headers={"Content-Type": "application/json"},
                 json=payload,
                 timeout=90
             )
             resp.raise_for_status()
-            content = resp.json()["choices"][0]["message"]["content"].strip()
+            res_data = resp.json()
+            
+            # Extract content text from Gemini response structure
+            content = res_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            
             # Clean possible markdown wrapping
             content = re.sub(r"^```json\s*|^```\s*|\s*```$", "", content, flags=re.M).strip()
             return json.loads(content)
         except requests.HTTPError as e:
             last_err = e
             if resp.status_code == 429 and attempt < retries:
-                logger.warning("Groq rate limit hit. Waiting before retry...")
+                logger.warning("Gemini rate limit hit. Waiting before retry...")
                 time.sleep(3)
             else:
-                raise HTTPException(status_code=502, detail=f"Groq API Error: {e}")
+                raise HTTPException(status_code=502, detail=f"Gemini API Error: {e}")
         except Exception as e:
             last_err = e
             if attempt < retries:
                 time.sleep(1)
             else:
-                raise HTTPException(status_code=500, detail=f"Structuring parsing failed: {e}")
+                raise HTTPException(status_code=500, detail=f"Gemini parsing failed: {e}")
 
-    raise HTTPException(status_code=500, detail=f"All Groq connection attempts failed: {last_err}")
+    raise HTTPException(status_code=500, detail=f"All Gemini connection attempts failed: {last_err}")
 
 def _find(pattern, text, flags=0, group=0):
     m = re.search(pattern, text, flags)
