@@ -667,6 +667,22 @@ export default function ExtractorWorkspace() {
             </div>
 
           </div>
+          
+          {/* Google AdSense Responsive Ad Unit */}
+          <div style={{ marginTop: "32px" }}>
+            <div className="ad-unit">
+              <ins className="adsbygoogle"
+                   style={{ display: "block" }}
+                   data-ad-client="ca-pub-xxxxxxxxxxxxxxxx"
+                   data-ad-slot="yyyyyyyyyy"
+                   data-ad-format="auto"
+                   data-full-width-responsive="true"></ins>
+              <script dangerouslySetInnerHTML={{
+                __html: "(adsbygoogle = window.adsbygoogle || []).push({});"
+              }} />
+            </div>
+          </div>
+
         </div>
       </section>
     </>

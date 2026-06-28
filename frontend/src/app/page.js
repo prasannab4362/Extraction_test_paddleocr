@@ -212,6 +212,22 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/* Google AdSense Responsive Display Banner */}
+      <div className="container" style={{ margin: "20px auto" }}>
+        <div className="ad-unit">
+          {/* AdSense Responsive Ad tag code */}
+          <ins className="adsbygoogle"
+               style={{ display: "block" }}
+               data-ad-client="ca-pub-xxxxxxxxxxxxxxxx"
+               data-ad-slot="xxxxxxxxxx"
+               data-ad-format="auto"
+               data-full-width-responsive="true"></ins>
+          <script dangerouslySetInnerHTML={{
+            __html: "(adsbygoogle = window.adsbygoogle || []).push({});"
+          }} />
+        </div>
+      </div>
+
       {/* ===== FAQ ===== */}
       <section className="section" style={{ background: "#fff" }}>
         <div className="container">
