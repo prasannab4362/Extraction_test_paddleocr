@@ -56,12 +56,12 @@ export default function PrivacyPage() {
             <h2>4. Third-Party AI Services</h2>
             <p>
               OCR text extraction is performed using <strong>PaddleOCR</strong> (running on our server).
-              AI structuring is performed using the <strong>Groq API</strong> (llama-3.3-70b model).
-              When text is sent to Groq for structuring, it is subject to{" "}
-              <a href="https://groq.com/privacy-policy/" target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>
-                Groq's Privacy Policy
+              AI structuring is performed using the <strong>Google Gemini API</strong> (gemini-2.5-flash-lite model).
+              When text is sent to Gemini for structuring, it is subject to{" "}
+              <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" style={{ color: "var(--primary)" }}>
+                Google's Privacy Policy
               </a>.
-              Groq does not use this data for model training.
+              Google does not use this data for model training.
             </p>
 
             <h2>5. Analytics</h2>
