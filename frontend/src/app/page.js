@@ -1,532 +1,262 @@
 "use client";
 
-import React, { useState } from "react";
+import Link from "next/link";
+import { useState } from "react";
 
-export default function Home() {
-  const [activeTile, setActiveTile] = useState(null); // null means show grid, otherwise show specific upload
-  const [activeTab, setActiveTab] = useState("structured");
-  const [selectedFiles, setSelectedFiles] = useState([]);
-  const [currentMode, setCurrentMode] = useState("merge");
-  const [loading, setLoading] = useState(false);
-  const [loadingStatus, setLoadingStatus] = useState("Queued");
-  const [results, setResults] = useState([]);
+const tools = [
+  {
+    id: "invoice",
+    name: "Invoice Extractor",
+    icon: "🧾",
+    desc: "Extract vendor details, line items, tax, totals, and due dates from any invoice or bill.",
+    tags: ["PDF", "Image"],
+  },
+  {
+    id: "business_card",
+    name: "Business Card Reader",
+    icon: "📇",
+    desc: "Parse contact name, job title, company, phone, email, and address from business cards.",
+    tags: ["Image", "Batch"],
+  },
+  {
+    id: "table",
+    name: "Table Structure Extractor",
+    icon: "📊",
+    desc: "Detect and extract tabular data grids from spreadsheets, reports, and structured forms.",
+    tags: ["PDF", "Image"],
+  },
+  {
+    id: "aadhaar",
+    name: "Aadhaar Card Extractor",
+    icon: "🆔",
+    desc: "Extract Aadhaar number, full name, DOB, gender, and address from Indian ID cards.",
+    tags: ["Image", "Batch"],
+  },
+  {
+    id: "pan",
+    name: "PAN Card Extractor",
+    icon: "💳",
+    desc: "Extract PAN number, full name, father's name, and date of birth from PAN cards.",
+    tags: ["Image", "Batch"],
+  },
+  {
+    id: "general",
+    name: "General Document Extractor",
+    icon: "📄",
+    desc: "Extract summaries, key fields, and section structure from any unstructured document.",
+    tags: ["PDF", "Image"],
+  },
+];
 
-  const handleFileChange = (e) => {
-    if (e.target.files) {
-      setSelectedFiles(Array.from(e.target.files));
-    }
-  };
+const steps = [
+  {
+    n: "1",
+    title: "Choose a Tool",
+    desc: "Select the type of document you want to extract — invoice, ID card, table, or any document.",
+  },
+  {
+    n: "2",
+    title: "Upload Your Files",
+    desc: "Drag and drop images or PDFs. Upload a single file or batch-process multiple at once.",
+  },
+  {
+    n: "3",
+    title: "Download Results",
+    desc: "Instantly get structured data in clean JSON, raw text, or export directly to a spreadsheet.",
+  },
+];
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.currentTarget.classList.add("dragover");
-  };
+const faqs = [
+  {
+    q: "Is OCR extraction free to use?",
+    a: "Yes, OCR extraction is completely free. You can upload and process documents without any sign-up or payment.",
+  },
+  {
+    q: "Are my uploaded files stored or shared?",
+    a: "No. Your files are processed in memory and are never stored on our servers. We do not retain, share, or log your documents.",
+  },
+  {
+    q: "What file formats are supported?",
+    a: "We support common image formats (JPG, PNG, WEBP, TIFF) and PDF files. Multi-page PDFs are handled automatically.",
+  },
+  {
+    q: "Can I process multiple documents at once?",
+    a: "Yes! Use Batch Mode to upload multiple images and extract data from each one independently. Perfect for processing stacks of business cards or ID cards.",
+  },
+  {
+    q: "Can it read Hindi or other Indic languages?",
+    a: "The current version is optimized for English. Multi-language support including Hindi, Tamil, and Telugu is on our roadmap.",
+  },
+  {
+    q: "How accurate is the extraction?",
+    a: "Accuracy depends on document quality. Clear, high-resolution scans yield 95%+ accuracy. The AI model intelligently corrects minor OCR errors.",
+  },
+];
 
-  const handleDragLeave = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.currentTarget.classList.remove("dragover");
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    e.currentTarget.classList.remove("dragover");
-    if (e.dataTransfer.files) {
-      setSelectedFiles(Array.from(e.dataTransfer.files));
-    }
-  };
-
-  const runExtraction = async () => {
-    setLoading(true);
-    setLoadingStatus("Running PaddleOCR on pages...");
-
-    const formData = new FormData();
-    selectedFiles.forEach((file) => {
-      formData.append("files", file);
-    });
-    formData.append("mode", currentMode);
-    formData.append("doc_type", activeTile);
-
-    try {
-      const response = await fetch("http://127.0.0.1:8000/api/extract", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.detail || "Extraction failed");
-      }
-
-      setLoadingStatus("Formatting results...");
-      const data = await response.json();
-      setResults(data);
-    } catch (err) {
-      alert("Error during extraction: " + err.message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text).then(() => {
-      alert("Copied to clipboard!");
-    });
-  };
-
-  const resetWorkspace = () => {
-    setActiveTile(null);
-    setSelectedFiles([]);
-    setResults([]);
-    setActiveTab("structured");
-  };
-
-  const downloadExcel = async () => {
-    try {
-      const response = await fetch("http://127.0.0.1:8000/api/export", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(results),
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to export data");
-      }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `extracted_${activeTile}_data.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (err) {
-      alert("Error exporting spreadsheet: " + err.message);
-    }
-  };
-
-
-  // Extraction Cards metadata
-  const tiles = [
-    { id: "invoice", name: "Invoice Extractor", icon: "🧾", desc: "Extract totals, vendor details, tax, and line items." },
-    { id: "business_card", name: "Business Card Reader", icon: "📇", desc: "Extract contact info, email, company, and address." },
-    { id: "table", name: "Table Structure Extractor", icon: "📊", desc: "Extract grids and tabular structure documents." },
-    { id: "aadhaar", name: "Aadhaar Card Extractor", icon: "🆔", desc: "Extract Aadhaar number, name, DOB, and gender." },
-    { id: "pan", name: "PAN Card Extractor", icon: "💳", desc: "Extract PAN number, full name, and father's name." },
-    { id: "general", name: "General Document Extractor", icon: "📄", desc: "Extract unstructured articles, text sheets, and summaries." }
-  ];
+export default function LandingPage() {
+  const [openFaq, setOpenFaq] = useState(null);
 
   return (
     <>
-      {/* Sidebar Navigation */}
-      <div className="sidebar">
-        <div className="brand" onClick={resetWorkspace} style={{ cursor: "pointer" }}>
-          <div className="brand-logo">O</div>
-          <div className="brand-name">OCR extraction</div>
-        </div>
-        <ul className="nav-list">
-          <li className="nav-item active" onClick={resetWorkspace}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="3" y="3" width="7" height="7" />
-              <rect x="14" y="3" width="7" height="7" />
-              <rect x="14" y="14" width="7" height="7" />
-              <rect x="3" y="14" width="7" height="7" />
-            </svg>
-            Dashboard
-          </li>
-        </ul>
-      </div>
-
-      {/* Main Workspace Content */}
-      <div className="workspace">
-        <div className="header">
-          <div className="header-title">
-            {activeTile 
-              ? `${tiles.find(t => t.id === activeTile)?.name}` 
-              : "Dashboard"}
-          </div>
-          {activeTile && (
-            <button 
-              onClick={resetWorkspace}
-              style={{
-                background: "transparent",
-                border: "1px solid var(--primary)",
-                color: "var(--primary)",
-                padding: "8px 16px",
-                borderRadius: "var(--radius-md)",
-                cursor: "pointer",
-                fontWeight: 600,
-                fontSize: "14px"
-              }}
-            >
-              ← Back to Options
-            </button>
-          )}
-        </div>
-
-        <div className="main-content">
-          
-          {/* Main Grid View */}
-          {!activeTile && (
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "24px" }}>
-              {tiles.map((tile) => (
-                <div 
-                  key={tile.id} 
-                  className="card" 
-                  onClick={() => setActiveTile(tile.id)}
-                  style={{
-                    cursor: "pointer",
-                    transition: "transform 0.2s, box-shadow 0.2s",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: "12px",
-                    height: "100%"
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = "translateY(-4px)";
-                    e.currentTarget.style.boxShadow = "0 8px 30px rgba(16, 185, 129, 0.1)";
-                    e.currentTarget.style.borderColor = "var(--primary)";
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = "none";
-                    e.currentTarget.style.boxShadow = "0 4px 20px rgba(0, 0, 0, 0.03)";
-                    e.currentTarget.style.borderColor = "#e5e7eb";
-                  }}
-                >
-                  <div style={{ fontSize: "36px" }}>{tile.icon}</div>
-                  <div style={{ fontWeight: 700, fontSize: "18px", color: "var(--text-main)", fontFamily: "var(--font-display)" }}>
-                    {tile.name}
-                  </div>
-                  <div style={{ fontSize: "14px", color: "var(--text-muted)", lineHeight: "1.5" }}>
-                    {tile.desc}
-                  </div>
-                </div>
-              ))}
+      {/* ===== HERO ===== */}
+      <section className="hero">
+        <div className="container">
+          <div
+            style={{
+              maxWidth: "700px",
+              animation: "fadeUp 0.6s ease-out both",
+            }}
+          >
+            <div className="hero-badge">
+              <span>🚀</span>
+              <span>Free · No sign-up · Instant results</span>
             </div>
-          )}
 
-          {/* Upload & Result Panel */}
-          {activeTile && (
-            <div className="panel active">
-              <div className="dashboard-grid">
-                {/* Left column: Upload Card */}
-                <div className="card" style={{ height: "fit-content" }}>
-                  {loading && (
-                    <div className="loading-overlay active">
-                      <div className="spinner"></div>
-                      <div style={{ fontWeight: 600 }}>Processing PaddleOCR & Groq LLM...</div>
-                      <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>{loadingStatus}</div>
-                    </div>
-                  )}
+            <h1 className="hero-title">
+              Extract Any Document <br />
+              <span className="gradient-text">in Seconds with AI</span>
+            </h1>
 
-                  <div
-                    className="dropzone"
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    onClick={() => document.getElementById("file-input").click()}
-                  >
-                    <div className="dropzone-icon">📥</div>
-                    <div className="dropzone-title">Upload files here</div>
-                    <div className="dropzone-muted">Drag and drop images or PDFs</div>
-                    <input
-                      type="file"
-                      id="file-input"
-                      multiple
-                      style={{ display: "none" }}
-                      onChange={handleFileChange}
-                    />
-                  </div>
+            <p className="hero-desc">
+              Upload invoices, Aadhaar cards, PAN cards, business cards, or any document.
+              Our AI reads, understands, and structures the data — ready to download.
+            </p>
 
-                  {selectedFiles.length > 0 && (
-                    <div style={{ marginTop: "16px", fontSize: "13px", color: "var(--text-muted)" }}>
-                      <strong>Selected files ({selectedFiles.length}):</strong>
-                      <br />
-                      {selectedFiles.map((f) => `• ${f.name} (${(f.size / 1024 / 1024).toFixed(2)} MB)`).join("<br>")}
-                    </div>
-                  )}
+            <div className="hero-actions">
+              <Link href="/extract" className="btn btn-primary btn-lg">
+                Start Extracting Free →
+              </Link>
+              <Link href="/about" className="btn btn-lg" style={{ background: "rgba(255,255,255,0.08)", color: "#fff", border: "1.5px solid rgba(255,255,255,0.2)" }}>
+                Learn More
+              </Link>
+            </div>
 
-                  <div className="mode-container">
-                    <div>
-                      <div className="mode-label">Document Queue Mode</div>
-                      <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "2px" }}>
-                        Merge pages vs separate documents
-                      </div>
-                    </div>
-                    <div
-                      className={`toggle-switch ${currentMode === "batch" ? "batch" : ""}`}
-                      onClick={() => setCurrentMode(currentMode === "merge" ? "batch" : "merge")}
-                    >
-                      <div className="toggle-slider"></div>
-                      <div className="toggle-options">
-                        <div className={`toggle-option ${currentMode === "merge" ? "active" : ""}`}>Merge Pages</div>
-                        <div className={`toggle-option ${currentMode === "batch" ? "active" : ""}`}>Batch Mode</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    className="btn-extract"
-                    disabled={selectedFiles.length === 0 || loading}
-                    onClick={runExtraction}
-                  >
-                    Run Extraction
-                  </button>
-                </div>
-
-                {/* Right column: Results Viewer */}
-                <div className="results-container">
-                  <div className="tabs" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <div
-                        className={`tab ${activeTab === "structured" ? "active" : ""}`}
-                        onClick={() => setActiveTab("structured")}
-                      >
-                        Structured Data
-                      </div>
-                      <div
-                        className={`tab ${activeTab === "raw-text" ? "active" : ""}`}
-                        onClick={() => setActiveTab("raw-text")}
-                      >
-                        Raw Text
-                      </div>
-                      <div
-                        className={`tab ${activeTab === "json" ? "active" : ""}`}
-                        onClick={() => setActiveTab("json")}
-                      >
-                        Raw JSON
-                      </div>
-                    </div>
-                    {results.length > 0 && (
-                      <button 
-                        onClick={downloadExcel}
-                        style={{
-                          background: "var(--primary)",
-                          border: "none",
-                          color: "#fff",
-                          padding: "8px 16px",
-                          borderRadius: "var(--radius-md)",
-                          cursor: "pointer",
-                          fontWeight: 600,
-                          fontSize: "13px",
-                          display: "flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          boxShadow: "0 2px 8px var(--primary-glow)",
-                          transition: "transform 0.2s"
-                        }}
-                        onMouseEnter={(e) => e.currentTarget.style.transform = "scale(1.02)"}
-                        onMouseLeave={(e) => e.currentTarget.style.transform = "scale(1)"}
-                      >
-                        📥 Download spreadsheet
-                      </button>
-                    )}
-                  </div>
-
-
-                  {/* Tab: Structured Data */}
-                  <div className={`tab-content ${activeTab === "structured" ? "active" : ""}`}>
-                    {results.length === 0 ? (
-                      <div style={{ color: "var(--text-muted)", textAlign: "center", marginTop: "100px" }}>
-                        Run extraction on a document to visualize structured results.
-                      </div>
-                    ) : (
-                      <div>
-                        {results.map((res) => {
-                          const struct = res.structured_data;
-                          const docType = res.document_type || activeTile;
-
-                          return (
-                            <div key={res.id} style={{ marginBottom: "24px" }}>
-                              <div
-                                style={{
-                                  fontWeight: 600,
-                                  fontSize: "15px",
-                                  marginBottom: "12px",
-                                  color: "var(--text-main)",
-                                  display: "flex",
-                                  alignItems: "center",
-                                  justifyContent: "space-between",
-                                }}
-                              >
-                                <span>File: {res.filename}</span>
-                                <span className="badge badge-type">{docType}</span>
-                              </div>
-                              
-                              <div className="structured-grid">
-                                
-                                {/* Invoice / Bill Schema View */}
-                                {activeTile === "invoice" && (
-                                  <>
-                                    <div className="meta-card">
-                                      <div className="meta-title">Invoice Details</div>
-                                      <div className="meta-row"><span class="meta-label">Vendor:</span><span class="meta-val">{struct.vendor_name || "N/A"}</span></div>
-                                      <div className="meta-row"><span class="meta-label">Number:</span><span class="meta-val">{struct.invoice_or_bill_number || "N/A"}</span></div>
-                                      <div className="meta-row"><span class="meta-label">Date:</span><span class="meta-val">{struct.date || "N/A"}</span></div>
-                                      <div className="meta-row"><span class="meta-label">Due Date:</span><span class="meta-val">{struct.due_date || "N/A"}</span></div>
-                                      <div className="meta-row" style={{ fontWeight: 700, color: "var(--secondary)" }}>
-                                        <span class="meta-label" style={{ color: "var(--secondary)" }}>Total Amount:</span>
-                                        <span class="meta-val">{struct.total_amount || "N/A"}</span>
-                                      </div>
-                                    </div>
-                                    <div className="meta-card">
-                                      <div className="meta-title">Customer Info</div>
-                                      <div className="meta-row"><span class="meta-label">Name:</span><span class="meta-val">{struct.customer_name || "N/A"}</span></div>
-                                      <div className="meta-row"><span class="meta-label">Address:</span><span class="meta-val" style={{ textAlign: "right", maxWidth: "150px" }}>{struct.customer_address || "N/A"}</span></div>
-                                    </div>
-                                  </>
-                                )}
-
-                                {/* Business Card Schema View */}
-                                {activeTile === "business_card" && (
-                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
-                                    <div className="meta-title">Contact Card</div>
-                                    <div className="meta-row"><span class="meta-label">Name:</span><span class="meta-val">{struct.name || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Job Title:</span><span class="meta-val">{struct.job_title || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Company:</span><span class="meta-val">{struct.company_name || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Email:</span><span class="meta-val">{struct.email || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Phone:</span><span class="meta-val">{struct.phone_number || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Website:</span><span class="meta-val">{struct.website || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Address:</span><span class="meta-val">{struct.address || "N/A"}</span></div>
-                                  </div>
-                                )}
-
-                                {/* Aadhaar Card Schema View */}
-                                {activeTile === "aadhaar" && (
-                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
-                                    <div className="meta-title">Aadhaar Card details</div>
-                                    <div className="meta-row" style={{ fontSize: "16px", fontWeight: "700" }}>
-                                      <span class="meta-label">Aadhaar Number:</span>
-                                      <span class="meta-val" style={{ color: "var(--secondary)" }}>{struct.aadhaar_number || "N/A"}</span>
-                                    </div>
-                                    <div className="meta-row"><span class="meta-label">Full Name:</span><span class="meta-val">{struct.full_name || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Date of Birth:</span><span class="meta-val">{struct.date_of_birth || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Gender:</span><span class="meta-val">{struct.gender || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Address:</span><span class="meta-val">{struct.address || "N/A"}</span></div>
-                                  </div>
-                                )}
-
-                                {/* PAN Card Schema View */}
-                                {activeTile === "pan" && (
-                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
-                                    <div className="meta-title">PAN Card details</div>
-                                    <div className="meta-row" style={{ fontSize: "16px", fontWeight: "700" }}>
-                                      <span class="meta-label">PAN Number:</span>
-                                      <span class="meta-val" style={{ color: "var(--secondary)" }}>{struct.pan_number || "N/A"}</span>
-                                    </div>
-                                    <div className="meta-row"><span class="meta-label">Full Name:</span><span class="meta-val">{struct.full_name || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Father's Name:</span><span class="meta-val">{struct.fathers_name || "N/A"}</span></div>
-                                    <div className="meta-row"><span class="meta-label">Date of Birth:</span><span class="meta-val">{struct.date_of_birth || "N/A"}</span></div>
-                                  </div>
-                                )}
-
-                                {/* Tables Schema View */}
-                                {activeTile === "table" && (
-                                  <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
-                                    <div className="meta-title">Table Datasets</div>
-                                    {struct.tables && struct.tables.map((table, tIdx) => (
-                                      <div key={tIdx} style={{ marginBottom: "20px" }}>
-                                        {table.table_title && <div style={{ fontWeight: 600, marginBottom: "8px" }}>{table.table_title}</div>}
-                                        <div className="table-container">
-                                          <table className="data-table">
-                                            <thead>
-                                              <tr>
-                                                {table.headers && table.headers.map((h, hIdx) => <th key={hIdx}>{h}</th>)}
-                                              </tr>
-                                            </thead>
-                                            <tbody>
-                                              {table.rows && table.rows.map((row, rIdx) => (
-                                                <tr key={rIdx}>
-                                                  {row.map((cell, cIdx) => <td key={cIdx}>{cell}</td>)}
-                                                </tr>
-                                              ))}
-                                            </tbody>
-                                          </table>
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
-
-                                {/* General / Unstructured Schema View */}
-                                {activeTile === "general" && (
-                                  <>
-                                    <div className="meta-card" style={{ gridColumn: "1 / -1" }}>
-                                      <div className="meta-title">Document Summary</div>
-                                      <div style={{ lineHeight: "1.6", color: "var(--text-main)" }}>
-                                        {struct.summary || "No summary provided."}
-                                      </div>
-                                    </div>
-                                    <div className="meta-card">
-                                      <div className="meta-title">Key Properties</div>
-                                      {struct.key_metadata && struct.key_metadata.map((meta, mIdx) => (
-                                        <div key={mIdx} className="meta-row">
-                                          <span class="meta-label">{meta.key || "Property"}:</span>
-                                          <span class="meta-val">{meta.value || "N/A"}</span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                    <div className="meta-card">
-                                      <div className="meta-title">Document Outline</div>
-                                      {struct.structured_sections && struct.structured_sections.map((sect, sIdx) => (
-                                        <div key={sIdx} style={{ marginBottom: "12px" }}>
-                                          <div style={{ fontWeight: 600, fontSize: "14px", marginBottom: "4px" }}>{sect.heading}</div>
-                                          <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>{sect.text}</div>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </>
-                                )}
-
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Tab: Raw Text */}
-                  <div className={`tab-content ${activeTab === "raw-text" ? "active" : ""}`}>
-                    <div className="text-viewer" id="raw-text-viewer">
-                      <button
-                        className="copy-btn"
-                        onClick={() => copyToClipboard(results.map((r) => r.raw_text).join("\n\n"))}
-                      >
-                        Copy
-                      </button>
-                      <span>
-                        {results.length === 0
-                          ? "No data extracted yet."
-                          : results.map((r) => r.raw_text).join("\n\n")}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Tab: JSON */}
-                  <div className={`tab-content ${activeTab === "json" ? "active" : ""}`}>
-                    <div className="text-viewer" id="json-viewer">
-                      <button className="copy-btn" onClick={() => copyToClipboard(JSON.stringify(results, null, 2))}>
-                        Copy
-                      </button>
-                      <span>
-                        {results.length === 0 ? "No data extracted yet." : JSON.stringify(results, null, 2)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
+            <div className="hero-stats">
+              <div className="stat-item">
+                <div className="stat-value">6+</div>
+                <div className="stat-label">Document Types</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-value">100%</div>
+                <div className="stat-label">Free to Use</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-value">0</div>
+                <div className="stat-label">Sign-ups Required</div>
+              </div>
+              <div className="stat-item">
+                <div className="stat-value">AI</div>
+                <div className="stat-label">Powered by Llama 3</div>
               </div>
             </div>
-          )}
-
+          </div>
         </div>
-      </div>
+      </section>
+
+      {/* ===== TOOLS GRID ===== */}
+      <section className="section" style={{ background: "#fff" }}>
+        <div className="container">
+          <div className="text-center" style={{ marginBottom: "56px" }}>
+            <div className="section-label">What can you extract?</div>
+            <h2 className="heading-lg">
+              6 Specialized Extraction Tools
+            </h2>
+            <p style={{ fontSize: "17px", color: "var(--text-muted)", maxWidth: "540px", margin: "16px auto 0" }}>
+              Each tool is powered by a dedicated AI prompt, tuned to the specific structure
+              and fields of that document type.
+            </p>
+          </div>
+
+          <div className="tools-grid">
+            {tools.map((tool) => (
+              <Link href={`/extract/${tool.id}`} key={tool.id} style={{ textDecoration: "none" }}>
+                <div className="tool-card">
+                  <div className="tool-icon">{tool.icon}</div>
+                  <div>
+                    <div className="tool-name">{tool.name}</div>
+                    <div style={{ display: "flex", gap: "6px", marginTop: "8px", flexWrap: "wrap" }}>
+                      {tool.tags.map((t) => (
+                        <span key={t} className="badge badge-gray">{t}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="tool-desc">{tool.desc}</div>
+                  <div className="tool-arrow">→</div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ===== HOW IT WORKS ===== */}
+      <section className="section" style={{ background: "var(--bg-muted)" }}>
+        <div className="container">
+          <div className="text-center" style={{ marginBottom: "56px" }}>
+            <div className="section-label">How it works</div>
+            <h2 className="heading-lg">3 Simple Steps</h2>
+            <p style={{ fontSize: "17px", color: "var(--text-muted)", maxWidth: "460px", margin: "16px auto 0" }}>
+              No account, no configuration. Just upload and extract.
+            </p>
+          </div>
+
+          <div className="steps-grid">
+            {steps.map((step) => (
+              <div className="step-item" key={step.n}>
+                <div className="step-number">{step.n}</div>
+                <div className="step-title">{step.title}</div>
+                <div className="step-desc">{step.desc}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ===== FAQ ===== */}
+      <section className="section" style={{ background: "#fff" }}>
+        <div className="container">
+          <div className="text-center" style={{ marginBottom: "48px" }}>
+            <div className="section-label">FAQ</div>
+            <h2 className="heading-lg">Frequently Asked Questions</h2>
+          </div>
+
+          <div className="faq-list">
+            {faqs.map((faq, i) => (
+              <div
+                key={i}
+                className={`faq-item ${openFaq === i ? "open" : ""}`}
+              >
+                <button
+                  className="faq-trigger"
+                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                >
+                  <span>{faq.q}</span>
+                  <div className="faq-icon">+</div>
+                </button>
+                <div className="faq-body">{faq.a}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ===== CTA ===== */}
+      <section className="cta-section">
+        <div className="container" style={{ position: "relative" }}>
+          <h2 className="cta-title">Ready to Extract Your First Document?</h2>
+          <p className="cta-desc">
+            No account needed. Just upload and get structured data instantly.
+          </p>
+          <div className="cta-actions">
+            <Link href="/extract" className="btn btn-lg btn-white">
+              Extract Now — It&apos;s Free →
+            </Link>
+            <Link href="/about" className="btn btn-lg btn-outline-white">
+              Learn More
+            </Link>
+          </div>
+        </div>
+      </section>
     </>
   );
 }

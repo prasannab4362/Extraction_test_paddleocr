@@ -5,300 +5,293 @@ import json
 import io
 import requests
 import csv
-from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Form, Header, HTTPException
+import logging
+from typing import List
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pypdfium2 as pdfium
 from PIL import Image
 from paddleocr import PaddleOCR
 
-# Load local .env file if present
+# ─── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("ocr-extraction")
+
+# ─── Load .env if present (local dev only) ─────────────────────────────────────
 if os.path.exists(".env"):
     with open(".env", "r", encoding="utf-8") as f:
         for line in f:
             if line.strip() and not line.startswith("#"):
                 parts = line.strip().split("=", 1)
                 if len(parts) == 2:
-                    os.environ[parts[0].strip()] = parts[1].strip()
+                    key, val = parts[0].strip(), parts[1].strip()
+                    if key not in os.environ:
+                        os.environ[key] = val
 
-app = FastAPI(title="OCR extraction")
+# ─── Config ────────────────────────────────────────────────────────────────────
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "15"))
+MAX_FILES = int(os.getenv("MAX_FILES", "10"))
 
-# CORS Middleware
+# ─── App ───────────────────────────────────────────────────────────────────────
+app = FastAPI(
+    title="OCR extraction API",
+    description="AI-powered document extraction service",
+    version="1.0.0"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory OCR initialization helper (lazy loading)
+# ─── OCR (lazy-loaded singleton) ──────────────────────────────────────────────
 _ocr_instance = None
 
 def get_ocr():
     global _ocr_instance
     if _ocr_instance is None:
+        logger.info("Initializing PaddleOCR...")
         _ocr_instance = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+        logger.info("PaddleOCR ready.")
     return _ocr_instance
 
-# Helper to run OCR on an image (PIL Image or path)
+# ─── OCR Helper ────────────────────────────────────────────────────────────────
 def process_ocr_image(image: Image.Image) -> str:
-    img_byte_arr = io.BytesIO()
-    image.save(img_byte_arr, format='PNG')
-    img_byte_arr = img_byte_arr.getvalue()
-    
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    raw = buf.getvalue()
     ocr = get_ocr()
-    result = ocr.ocr(img_byte_arr, cls=True)
-    
-    extracted_lines = []
+    result = ocr.ocr(raw, cls=True)
+    lines = []
     if result and result[0]:
         for line in result[0]:
-            text = line[1][0]
-            extracted_lines.append(text)
-    return "\n".join(extracted_lines)
+            lines.append(line[1][0])
+    return "\n".join(lines)
 
-# Structuring Prompt & Groq API Request
-def call_groq_api(raw_text: str, doc_type: str, api_key: str) -> dict:
-    url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-    
-    # Custom prompts based on document type
-    prompts = {
-        "invoice": (
-            "You are an AI invoice extractor. Extract metadata from raw OCR text and structure it into a clean JSON object:\n"
-            "- document_type (Invoice or Bill)\n"
-            "- invoice_or_bill_number\n"
-            "- date\n"
-            "- due_date\n"
-            "- vendor_name\n"
-            "- vendor_address\n"
-            "- customer_name\n"
-            "- customer_address\n"
-            "- line_items: list of objects containing (description, quantity, unit_price, total_price)\n"
-            "- subtotal\n"
-            "- tax\n"
-            "- total_amount\n"
-            "- currency\n"
-        ),
-        "business_card": (
-            "You are an AI Business Card reader. Extract metadata from raw OCR text and structure it into a clean JSON object:\n"
-            "- document_type (Business Card)\n"
-            "- name\n"
-            "- job_title\n"
-            "- company_name\n"
-            "- email\n"
-            "- phone_number\n"
-            "- website\n"
-            "- address\n"
-        ),
-        "table": (
-            "You are an AI Table parser. Extract tabular structure and grid data from raw OCR text and structure it into a clean JSON object:\n"
-            "- document_type (Table Document)\n"
-            "- tables: list of tables, each represented as an object containing:\n"
-            "  - table_title (if any)\n"
-            "  - headers: list of column headers\n"
-            "  - rows: list of lists representing each row's data\n"
-        ),
-        "aadhaar": (
-            "You are an AI Aadhaar Card extractor. Extract Indian Aadhaar details from raw OCR text and structure it into a clean JSON object:\n"
-            "- document_type (Aadhaar Card)\n"
-            "- aadhaar_number (formatted as XXXX XXXX XXXX)\n"
-            "- full_name\n"
-            "- date_of_birth\n"
-            "- gender (Male/Female/Other)\n"
-            "- address (if visible)\n"
-        ),
-        "pan": (
-            "You are an AI PAN Card extractor. Extract Indian Permanent Account Number (PAN) details from raw OCR text and structure it into a clean JSON object:\n"
-            "- document_type (PAN Card)\n"
-            "- pan_number\n"
-            "- full_name\n"
-            "- fathers_name\n"
-            "- date_of_birth\n"
-        ),
-        "general": (
-            "You are an AI general document extractor. Extract structured information from raw OCR text into a clean JSON object:\n"
-            "- document_type (General Document)\n"
-            "- document_title\n"
-            "- key_metadata: list of key-value pairs representing important properties found in the document\n"
-            "- summary: a clear, concise paragraph summarizing the document contents\n"
-            "- structured_sections: list of objects containing (heading, text)\n"
+# ─── Groq LLM Structuring ─────────────────────────────────────────────────────
+PROMPTS = {
+    "invoice": (
+        "You are an AI invoice extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
+        "document_type, invoice_or_bill_number, date, due_date, vendor_name, vendor_address, "
+        "customer_name, customer_address, line_items (list of {description, quantity, unit_price, total_price}), "
+        "subtotal, tax, total_amount, currency."
+    ),
+    "business_card": (
+        "You are a business card reader. From the raw OCR text, extract and return ONLY a JSON object with:\n"
+        "document_type, name, job_title, company_name, email, phone_number, website, address."
+    ),
+    "table": (
+        "You are a table extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
+        "document_type, tables (list of {table_title, headers (list), rows (list of lists)})."
+    ),
+    "aadhaar": (
+        "You are an Aadhaar Card extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
+        "document_type, aadhaar_number (formatted XXXX XXXX XXXX), full_name, date_of_birth, gender, address."
+    ),
+    "pan": (
+        "You are a PAN Card extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
+        "document_type, pan_number, full_name, fathers_name, date_of_birth."
+    ),
+    "general": (
+        "You are a general document extractor. From the raw OCR text, extract and return ONLY a JSON object with:\n"
+        "document_type, document_title, key_metadata (list of {key, value}), "
+        "summary (paragraph), structured_sections (list of {heading, text})."
+    ),
+}
+
+def call_groq_api(raw_text: str, doc_type: str) -> dict:
+    if not GROQ_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="Server configuration error: Groq API key is not set. Please contact the administrator."
         )
-    }
     
-    system_prompt = prompts.get(doc_type, prompts["general"])
-    system_prompt += "\nRespond ONLY with a valid JSON object. Do not include markdown code block formatting (such as ```json) or any conversational text."
-    
-    payload = {
-        "model": "llama-3.3-70b-specdec",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Raw OCR Text:\n{raw_text}\n\nStructured JSON:"}
-        ],
-        "temperature": 0.1,
-        "response_format": {"type": "json_object"}
-    }
-    
-    response = requests.post(url, json=payload, headers=headers, timeout=60)
+    prompt = PROMPTS.get(doc_type, PROMPTS["general"])
+    prompt += "\nRespond ONLY with valid JSON. No markdown, no explanation, no code fences."
+
+    response = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "llama-3.3-70b-specdec",
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": f"Raw OCR Text:\n{raw_text}\n\nJSON:"},
+            ],
+            "temperature": 0.1,
+            "response_format": {"type": "json_object"},
+        },
+        timeout=90,
+    )
     response.raise_for_status()
-    res_data = response.json()
-    output_text = res_data["choices"][0]["message"]["content"].strip()
-    return json.loads(output_text)
+    content = response.json()["choices"][0]["message"]["content"].strip()
+    return json.loads(content)
+
+# ─── File validation ──────────────────────────────────────────────────────────
+def validate_files(files: List[UploadFile]):
+    if len(files) > MAX_FILES:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_FILES} files allowed per request.")
+
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
+@app.get("/")
+def index():
+    return HTMLResponse("<h1>OCR extraction API is running.</h1><p>Access the frontend via Vercel.</p>")
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "groq_configured": bool(GROQ_API_KEY)}
 
 @app.post("/api/extract")
 async def extract_document(
+    request: Request,
     files: List[UploadFile] = File(...),
-    mode: str = Form("merge"),  # "merge" or "batch"
-    doc_type: str = Form("general")  # "invoice", "business_card", "table", "aadhaar", "pan", "general"
+    mode: str = Form("merge"),
+    doc_type: str = Form("general"),
 ):
-    # Fetch API Key from environment variable only
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key:
-        raise HTTPException(
-            status_code=400,
-            detail="Groq API Key is missing on the server backend. Please configure it in your .env file."
-        )
+    validate_files(files)
+    logger.info(f"Extract request: doc_type={doc_type}, mode={mode}, files={len(files)}")
 
-    results = []
-    
-    # Process files
     all_pages = []
+
     for file in files:
         file_bytes = await file.read()
-        filename = file.filename.lower()
-        
-        if filename.endswith(".pdf"):
+
+        # File size check
+        size_mb = len(file_bytes) / (1024 * 1024)
+        if size_mb > MAX_FILE_SIZE_MB:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{file.filename}' is {size_mb:.1f} MB. Maximum allowed is {MAX_FILE_SIZE_MB} MB."
+            )
+
+        fname = (file.filename or "").lower()
+        if fname.endswith(".pdf"):
             try:
                 pdf = pdfium.PdfDocument(file_bytes)
                 for page_idx in range(len(pdf)):
                     page = pdf[page_idx]
                     bitmap = page.render(scale=2)
                     pil_img = bitmap.to_pil()
-                    all_pages.append((f"{file.filename} (Page {page_idx+1})", pil_img))
+                    all_pages.append((f"{file.filename} (Page {page_idx + 1})", pil_img))
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to process PDF file {file.filename}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Failed to parse PDF '{file.filename}': {e}")
         else:
             try:
                 pil_img = Image.open(io.BytesIO(file_bytes)).convert("RGB")
                 all_pages.append((file.filename, pil_img))
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to open image file {file.filename}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Failed to open image '{file.filename}': {e}")
+
+    if not all_pages:
+        raise HTTPException(status_code=400, detail="No valid pages found in uploaded files.")
+
+    results = []
 
     if mode == "merge":
-        # Merge Mode
-        combined_text_lines = []
+        combined_parts = []
         for name, img in all_pages:
-            print(f"[*] Running OCR on page/file: {name}")
+            logger.info(f"OCR: {name}")
             text = process_ocr_image(img)
-            combined_text_lines.append(f"--- Document: {name} ---\n{text}")
-            
-        combined_text = "\n\n".join(combined_text_lines)
-        
+            combined_parts.append(f"=== {name} ===\n{text}")
+        combined_text = "\n\n".join(combined_parts)
+
         try:
-            structured_data = call_groq_api(combined_text, doc_type, api_key)
-            doc_id = str(uuid.uuid4())
-            results.append({
-                "id": doc_id,
-                "timestamp": datetime.datetime.now().isoformat(),
-                "filename": files[0].filename if len(files) == 1 else f"Merged ({len(files)} files)",
-                "document_type": structured_data.get("document_type", doc_type.capitalize()),
-                "structured_data": structured_data,
-                "raw_text": combined_text
-            })
+            structured = call_groq_api(combined_text, doc_type)
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to structure merged text: {str(e)}")
-            
-    else:
-        # Batch Mode
+            raise HTTPException(status_code=500, detail=f"AI structuring failed: {e}")
+
+        results.append({
+            "id": str(uuid.uuid4()),
+            "timestamp": datetime.datetime.utcnow().isoformat(),
+            "filename": files[0].filename if len(files) == 1 else f"Merged ({len(files)} files)",
+            "document_type": structured.get("document_type", doc_type.capitalize()),
+            "structured_data": structured,
+            "raw_text": combined_text,
+        })
+
+    else:  # batch
         for name, img in all_pages:
-            print(f"[*] Running batch OCR on page/file: {name}")
+            logger.info(f"Batch OCR: {name}")
             text = process_ocr_image(img)
             try:
-                structured_data = call_groq_api(text, doc_type, api_key)
-                doc_id = str(uuid.uuid4())
+                structured = call_groq_api(text, doc_type)
                 results.append({
-                    "id": doc_id,
-                    "timestamp": datetime.datetime.now().isoformat(),
+                    "id": str(uuid.uuid4()),
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
                     "filename": name,
-                    "document_type": structured_data.get("document_type", doc_type.capitalize()),
-                    "structured_data": structured_data,
-                    "raw_text": text
+                    "document_type": structured.get("document_type", doc_type.capitalize()),
+                    "structured_data": structured,
+                    "raw_text": text,
                 })
+            except HTTPException:
+                raise
             except Exception as e:
                 results.append({
                     "id": str(uuid.uuid4()),
-                    "timestamp": datetime.datetime.now().isoformat(),
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
                     "filename": name,
                     "document_type": "Error",
-                    "structured_data": {"error": f"Failed to structure page: {str(e)}"},
-                    "raw_text": text
+                    "structured_data": {"error": str(e)},
+                    "raw_text": text,
                 })
 
+    logger.info(f"Extraction complete: {len(results)} result(s)")
     return results
+
 
 @app.post("/api/export")
 def export_csv(data: List[dict]):
     if not data:
-        raise HTTPException(status_code=400, detail="No data provided to export")
-        
+        raise HTTPException(status_code=400, detail="No data to export.")
+
     output = io.StringIO()
-    # Write BOM for Excel UTF-8 support
-    output.write('\ufeff')
     writer = csv.writer(output)
-    
-    # Flatten the data structure: we only want the inner structured_data values
-    flat_data = []
-    headers_set = set()
-    
+
+    flat_rows = []
+    all_keys = set()
+
     for item in data:
         struct = item.get("structured_data", {})
-        # If there's an error or it's empty, skip or include error column
+        flat = {"filename": item.get("filename", ""), "timestamp": item.get("timestamp", "")}
         if "error" in struct:
-            flat_item = {"filename": item.get("filename", ""), "error": struct["error"]}
+            flat["error"] = struct["error"]
         else:
-            flat_item = {"filename": item.get("filename", ""), **struct}
-        
-        flat_data.append(flat_item)
-        headers_set.update(flat_item.keys())
-        
-    # Order headers logically: 'filename' first, then 'document_type' if present, then others
-    headers = ["filename"]
-    if "document_type" in headers_set:
-        headers.append("document_type")
-    
-    for h in sorted(list(headers_set)):
-        if h not in headers:
-            headers.append(h)
-            
+            for k, v in struct.items():
+                flat[k] = json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+        flat_rows.append(flat)
+        all_keys.update(flat.keys())
+
+    # Order columns: filename first, timestamp second, then alphabetical
+    headers = ["filename", "timestamp"]
+    for k in sorted(all_keys):
+        if k not in headers:
+            headers.append(k)
+
     writer.writerow(headers)
-    
-    for item in flat_data:
-        row = []
-        for h in headers:
-            val = item.get(h, "")
-            # If the value is a list (like line items or tables), format as readable JSON or string
-            if isinstance(val, (dict, list)):
-                val = json.dumps(val)
-            row.append(str(val))
-        writer.writerow(row)
-        
-    # Seek to start
-    stream = io.BytesIO(output.getvalue().encode('utf-8-sig'))
-    
+    for row in flat_rows:
+        writer.writerow([row.get(h, "") for h in headers])
+
+    stream = io.BytesIO(output.getvalue().encode("utf-8-sig"))
     return StreamingResponse(
         stream,
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=extracted_data.csv"}
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": "attachment; filename=extracted_data.csv"},
     )
 
-@app.get("/")
-def index():
-    return HTMLResponse(content="<h1>FastAPI API active. Access frontend via port 3000.</h1>")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
